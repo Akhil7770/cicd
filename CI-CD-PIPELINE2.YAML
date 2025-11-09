@@ -1,0 +1,964 @@
+# Cost Estimator Calc Service
+
+A microservice for calculating cost estimates for healthcare benefits, built with Python and FastAPI.
+
+## 📑 Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Getting Started](#getting-started)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [Docker Image Versioning](#docker-image-versioning)
+- [Deployment Guide](#deployment-guide)
+- [Environment Variables](#environment-variables)
+- [Development Workflow](#development-workflow)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+
+---
+
+## Overview
+
+### What is Cost Estimator Calc Service?
+
+This service provides cost estimation capabilities for healthcare benefits by:
+- Calculating premiums based on member data and benefit plans
+- Applying deductibles, co-insurance, and co-payments
+- Integrating with external services (Benefits, Accumulator, Token)
+- Storing calculation data in Google Cloud Spanner
+
+### Technology Stack
+
+- **Language:** Python 3.10
+- **Framework:** FastAPI
+- **Database:** Google Cloud Spanner
+- **Container Registry:** JFrog Artifactory (`cvsh.jfrog.io`)
+- **Orchestration:** Kubernetes (GKE)
+- **Deployment:** Helm Charts
+- **CI/CD:** GitHub Actions
+- **Observability:** OpenTelemetry
+
+---
+
+## Architecture
+
+### High-Level Architecture
+
+```
+┌─────────────┐
+│   Client    │
+│ Application │
+└──────┬──────┘
+       │
+       ↓
+┌─────────────────────────────────────┐
+│  Cost Estimator Calc Service        │
+│  (FastAPI - Python 3.10)            │
+├─────────────────────────────────────┤
+│  - REST API Endpoints               │
+│  - Business Logic                   │
+│  - Calculation Engine               │
+└──┬───────────┬──────────┬──────────┘
+   │           │          │
+   ↓           ↓          ↓
+┌────────┐  ┌──────────┐  ┌────────────┐
+│ Spanner│  │ Benefits │  │Accumulator │
+│   DB   │  │ Service  │  │  Service   │
+└────────┘  └──────────┘  └────────────┘
+```
+
+### Component Structure
+
+```
+cost-estimator-calc-service/
+├── app/
+│   ├── api/               # API routes
+│   ├── core/              # Core utilities
+│   ├── models/            # Data models
+│   ├── services/          # Business logic
+│   ├── repository/        # Data access
+│   └── main.py           # Application entry point
+├── tests/                # Test files
+├── deploy-configs/       # Kubernetes configs
+│   ├── hcb-edmlprvdraaece-pdev/
+│   └── hcb-edmlprvdraaece-prod/
+└── .github/workflows/    # CI/CD pipelines
+```
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.10+
+- Pipenv
+- Docker
+- kubectl (for deployment)
+- Access to CVS Health GitHub and Artifactory
+
+### Local Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/cvs-health-source-code/cost-estimator-calc-service.git
+cd cost-estimator-calc-service
+
+# Install dependencies
+pip install pipenv==2024.4.1
+pipenv install --dev
+
+# Activate virtual environment
+pipenv shell
+
+# Run tests
+python -m pytest tests/
+
+# Run application locally
+python app/main.py
+```
+
+### Environment Variables
+
+Create a `.env` file for local development:
+
+```bash
+# Database
+SPANNER_PROJECT_ID=your-gcp-project
+SPANNER_INSTANCE_ID=your-instance
+SPANNER_DATABASE_ID=your-database
+
+# External Services
+BENEFITS_URL=https://api.example.com/benefits
+ACCUMULATOR_URL=https://api.example.com/accumulator
+TOKEN_URL=https://auth.example.com/token
+
+# Auth
+CLIENT_ID=your-client-id
+CLIENT_SECRET=your-client-secret
+
+# Environment
+ENVIRONMENT=local
+ENV_NAME=LOCAL
+```
+
+---
+
+## CI/CD Pipeline
+
+### Pipeline Overview
+
+The service uses **two separate pipelines**:
+
+1. **CI Pipeline** - Build, test, scan, and publish Docker images
+2. **CD Pipeline** - Inject configuration and deploy to Kubernetes
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                   COMPLETE CI/CD FLOW                        │
+└──────────────────────────────────────────────────────────────┘
+
+Developer Commits → CI Pipeline → Docker Image → CD Pipeline → K8s
+      Code           (Build)      (Artifactory)   (Deploy)    (Running)
+```
+
+### CI Pipeline (Continuous Integration)
+
+**Files:**
+- `.github/workflows/ci_pdev.yaml` - Pdev branch
+- `.github/workflows/ci.yaml` - Master branch
+
+**Triggers:**
+- Push to `pdev` or `master` branch
+- Excludes: `deploy-configs/**`, `README.md`, `.github/workflows/cd.yaml`
+
+**Pipeline Stages:**
+
+```yaml
+1. setup              # Install dependencies, cache
+2. test               # Run pytest, SonarQube
+3. lint               # Code quality checks
+4. sast-scan          # Security: Code vulnerabilities (Snyk)
+5. sca-scan           # Security: Dependency vulnerabilities (Snyk)
+6. build-scan-publish # Build Docker, scan container, push to Artifactory
+7. sbom               # Generate Software Bill of Materials
+8. cd-values-update   # (Optional) Auto-update deployment config
+```
+
+**CI Output:**
+- Docker image in Artifactory with semantic version tag
+- Git tag (e.g., `v1.0.3`)
+- Build artifacts and scan reports
+
+### CD Pipeline (Continuous Deployment)
+
+**File:** `.github/workflows/cd.yaml`
+
+**Triggers:**
+- Push to `master` or `pdev` branch
+- Changes to `**/values/v1.yaml` files
+- Manual workflow dispatch
+
+**Pipeline Stages:**
+
+```yaml
+1. detect-changes        # Detect which environment config changed
+2. inject-github-env-vars # Inject 27 environment variables from GitHub
+3. deploy                # Deploy to Kubernetes using Helm
+```
+
+**CD Actions:**
+1. Detects which environment changed (pdev or prod)
+2. Loads secrets from GitHub Environment
+3. Injects 27 environment variables into v1.yaml
+4. Commits updated v1.yaml back to repository
+5. Deploys to Kubernetes cluster
+
+---
+
+## Docker Image Versioning
+
+### Versioning Strategy
+
+The service uses **Semantic Versioning** with **Git SHA fallback**.
+
+### How Versions Are Created
+
+```
+┌─────────────────────────────────────────────────────────┐
+│          VERSION CREATION PROCESS                       │
+└─────────────────────────────────────────────────────────┘
+
+Commit Message Analysis
+        ↓
+┌───────────────────────────────────────┐
+│  Semantic Release                     │
+│  - Reads commit messages              │
+│  - Determines version bump            │
+│  - Creates git tag                    │
+└───────────────────────────────────────┘
+        ↓
+┌───────────────────────────────────────┐
+│  Version Assignment                   │
+│  - Success: Use semantic version      │
+│  - Failure: Fallback to Git SHA       │
+└───────────────────────────────────────┘
+        ↓
+    Docker Build
+        ↓
+  Image: app:1.0.3
+     or
+  Image: app:abc123def...
+```
+
+### Commit Message Format
+
+**Use Conventional Commits for proper versioning:**
+
+```bash
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer]
+```
+
+**Types and Version Bumps:**
+
+| Commit Type | Version Bump | Example | Result |
+|-------------|--------------|---------|--------|
+| `fix:` | PATCH (0.0.X) | `fix: resolve timeout` | 1.0.2 → 1.0.3 |
+| `feat:` | MINOR (0.X.0) | `feat: add payment` | 1.0.3 → 1.1.0 |
+| `feat!:` or `BREAKING CHANGE:` | MAJOR (X.0.0) | `feat!: redesign API` | 1.1.0 → 2.0.0 |
+| `chore:`, `docs:`, `style:` | No bump | `chore: update deps` | Uses Git SHA |
+
+### Examples
+
+#### Example 1: Bug Fix (Patch)
+
+```bash
+# Commit
+git commit -m "fix: resolve database connection timeout"
+
+# Result
+Version: 1.0.2 → 1.0.3
+Tag: v1.0.3
+Image: cost-estimator-calc-service:1.0.3
+```
+
+#### Example 2: New Feature (Minor)
+
+```bash
+# Commit
+git commit -m "feat: add support for multiple payment methods"
+
+# Result
+Version: 1.0.3 → 1.1.0
+Tag: v1.1.0
+Image: cost-estimator-calc-service:1.1.0
+```
+
+#### Example 3: Breaking Change (Major)
+
+```bash
+# Commit
+git commit -m "feat!: redesign API structure
+
+BREAKING CHANGE: endpoints now use /v2/ prefix"
+
+# Result
+Version: 1.1.0 → 2.0.0
+Tag: v2.0.0
+Image: cost-estimator-calc-service:2.0.0
+```
+
+#### Example 4: No Semantic Commit (Git SHA)
+
+```bash
+# Commit
+git commit -m "update readme and formatting"
+
+# Result
+No version bump
+No tag created
+Image: cost-estimator-calc-service:abc123def456789...
+```
+
+### Checking Your Version
+
+```bash
+# Check latest git tags
+git tag --list | grep "^v" | sort -V | tail -5
+
+# Check what version will be created
+git log --oneline -1
+
+# Check images in Artifactory
+# Visit: https://cvsh.jfrog.io
+# Path: cvsdigital-docker/ghemu/cvs-health-source-code/cost-estimator-calc-service
+```
+
+---
+
+## Deployment Guide
+
+### Deployment Configurations
+
+#### Pdev Environment
+
+**Configuration:** `deploy-configs/hcb-edmlprvdraaece-pdev/values/v1.yaml`
+
+```yaml
+appData:
+  nameSpace: hcb-edmlprvdraaece-pdev
+  dockerHub: cvsh.jfrog.io
+  dockerImageGroupName: cvsdigital-docker/ghemu/cvs-health-source-code/cost-estimator-calc-service
+  dockerImageName: cost-estimator-calc-service
+  dockerImageTag: 1.0.3  # ← Update this after CI build
+
+workloadIdentity:
+  gcpProject: edp-pdev-hcb-gke
+  serviceAccountName: hcb-cet-ksa
+  serviceAccountEmail: hcb-edmlprvdraaece@edp-preprod-serviceops.iam.gserviceaccount.com
+```
+
+#### Prod Environment
+
+**Configuration:** `deploy-configs/hcb-edmlprvdraaece-prod/values/v1.yaml`
+
+Similar structure with prod-specific values.
+
+### Deployment Process
+
+#### Step 1: Build and Test (CI)
+
+```bash
+# Make code changes
+git checkout pdev
+vim app/services/calculation_service.py
+
+# Commit with semantic message
+git add .
+git commit -m "fix: improve error handling in premium calculation"
+git push origin pdev
+```
+
+**CI will:**
+1. Run tests and security scans
+2. Build Docker image with version 1.0.4
+3. Push to Artifactory
+4. Create git tag v1.0.4
+
+#### Step 2: Update Deployment Config
+
+**Option A: Manual Update**
+
+```bash
+# Wait for CI to complete (~5-10 minutes)
+# Check GitHub Actions for new version
+
+# Update v1.yaml
+vim deploy-configs/hcb-edmlprvdraaece-pdev/values/v1.yaml
+# Change: dockerImageTag: 1.0.4
+
+git add deploy-configs/hcb-edmlprvdraaece-pdev/values/v1.yaml
+git commit -m "chore: update image tag to 1.0.4"
+git push origin pdev
+```
+
+**Option B: Automatic Update (Recommended)**
+
+Add to `ci_pdev.yaml`:
+```yaml
+with:
+  CD_DEPLOY_FILE: "deploy-configs/hcb-edmlprvdraaece-pdev/values/v1.yaml"
+```
+
+This automatically updates v1.yaml after CI completes.
+
+#### Step 3: Deploy (CD)
+
+**CD pipeline will automatically:**
+1. Detect v1.yaml change
+2. Inject 27 environment variables from GitHub Environment
+3. Deploy to Kubernetes cluster
+4. Pull latest Docker image from Artifactory
+
+#### Step 4: Verify Deployment
+
+```bash
+# Check pods
+kubectl get pods -n hcb-edmlprvdraaece-pdev
+
+# Check pod logs
+kubectl logs -f <pod-name> -n hcb-edmlprvdraaece-pdev
+
+# Check deployed image version
+kubectl get deployment -n hcb-edmlprvdraaece-pdev cost-estimator-calc-service \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+# Expected output:
+# cvsh.jfrog.io/.../cost-estimator-calc-service:1.0.4
+
+# Check environment variables
+kubectl exec -n hcb-edmlprvdraaece-pdev <pod-name> -- env | grep SPANNER
+```
+
+### Rollback
+
+```bash
+# Rollback to previous version
+# Update v1.yaml with older version
+dockerImageTag: 1.0.3  # Previous working version
+
+git add deploy-configs/hcb-edmlprvdraaece-pdev/values/v1.yaml
+git commit -m "rollback: revert to version 1.0.3"
+git push origin pdev
+
+# CD will deploy the older version
+```
+
+---
+
+## Environment Variables
+
+### Overview
+
+The CD pipeline injects **27 environment variables** from GitHub Environments into the Kubernetes deployment.
+
+### GitHub Environments
+
+Two separate environments store configuration:
+
+1. **hcb-edmlprvdraaece-pdev** - Development environment variables
+2. **hcb-edmlprvdraaece-prod** - Production environment variables
+
+### Variable Categories
+
+#### Core Environment (4 variables)
+- `ENVIRONMENT` - Environment name (pdev/prod)
+- `ENV_NAME` - Environment identifier (PDEV/PROD)
+- `CLIENT_ID` - OAuth client ID
+- `CLIENT_SECRET` - OAuth client secret (via K8s secret)
+
+#### Database Configuration (6 variables)
+- `SPANNER_PROJECT_ID` - GCP project ID
+- `SPANNER_INSTANCE_ID` - Cloud Spanner instance
+- `SPANNER_DATABASE_ID` - Database name
+- `BENEFITS_URL` - Benefits service endpoint
+- `ACCUMULATOR_URL` - Accumulator service endpoint
+- `TOKEN_URL` - Token service endpoint
+
+#### OpenTelemetry (17 variables)
+- Exporter endpoints (metrics, traces, logs)
+- Exporter types and protocols
+- Service configuration
+- Instrumentation settings
+
+### Environment Variable Injection
+
+**Before Injection:**
+```yaml
+envVars: |
+  - name: TEST_KEY
+    value: TEST_VALUE
+  - name: ENV
+    value: pdev
+```
+
+**After CD Pipeline:**
+```yaml
+# environment variables for app - injected from GitHub Environment
+envVars: |
+  - name: ENVIRONMENT
+    value: "pdev"
+  - name: SPANNER_PROJECT_ID
+    value: "edp-pdev-hcb-gke"
+  - name: ENV_NAME
+    value: "PDEV"
+  # ... (27 total variables)
+```
+
+### Updating Environment Variables
+
+1. Go to GitHub Repository Settings
+2. Navigate to Environments
+3. Select `hcb-edmlprvdraaece-pdev` or `hcb-edmlprvdraaece-prod`
+4. Update variable values
+5. Trigger CD pipeline (push change to v1.yaml)
+6. Variables will be automatically injected and deployed
+
+### Verifying Environment Variables
+
+```bash
+# Check in v1.yaml (after CD runs)
+cat deploy-configs/hcb-edmlprvdraaece-pdev/values/v1.yaml
+
+# Check in running pod
+POD=$(kubectl get pods -n hcb-edmlprvdraaece-pdev -l app=cost-estimator-calc-service -o jsonpath='{.items[0].metadata.name}')
+
+# View all variables
+kubectl exec -n hcb-edmlprvdraaece-pdev $POD -- env | sort
+
+# Check specific variables
+kubectl exec -n hcb-edmlprvdraaece-pdev $POD -- env | grep SPANNER
+kubectl exec -n hcb-edmlprvdraaece-pdev $POD -- env | grep OTEL
+```
+
+---
+
+## Development Workflow
+
+### Daily Development Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  DEVELOPER WORKFLOW                         │
+└─────────────────────────────────────────────────────────────┘
+
+1. Create Feature Branch
+   └─→ git checkout -b feature/add-new-calculation
+
+2. Develop & Test Locally
+   └─→ Write code
+   └─→ Run tests: pytest tests/
+   └─→ Test locally: python app/main.py
+
+3. Commit with Semantic Message
+   └─→ git commit -m "feat: add premium adjustment calculation"
+
+4. Push to Pdev
+   └─→ git checkout pdev
+   └─→ git merge feature/add-new-calculation
+   └─→ git push origin pdev
+
+5. CI Pipeline Runs (automatic)
+   └─→ Tests pass
+   └─→ Security scans pass
+   └─→ Docker image built: 1.1.0
+   └─→ Pushed to Artifactory
+
+6. Update Deployment Config
+   └─→ Update v1.yaml: dockerImageTag: 1.1.0
+   └─→ git push origin pdev
+
+7. CD Pipeline Deploys (automatic)
+   └─→ Injects env vars
+   └─→ Deploys to pdev Kubernetes
+
+8. Test in Pdev Environment
+   └─→ Verify functionality
+   └─→ Check logs
+   └─→ Monitor metrics
+
+9. Promote to Production
+   └─→ Merge pdev to master
+   └─→ Repeat steps 5-7 for prod
+```
+
+### Branch Strategy
+
+```
+master (prod)
+  ↑
+  └─── pdev (development)
+        ↑
+        ├─── feature/feature-1
+        ├─── feature/feature-2
+        └─── fix/bug-fix
+```
+
+**Branches:**
+- `master` - Production code, requires approval
+- `pdev` - Development/testing environment
+- `feature/*` - New features
+- `fix/*` - Bug fixes
+- `hotfix/*` - Emergency production fixes
+
+### Code Review Process
+
+1. Create Pull Request from feature branch to pdev
+2. Run automated tests
+3. Request code review from team
+4. Address feedback
+5. Merge after approval
+6. CI/CD automatically handles deployment
+
+---
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+#### Issue 1: CI Not Building Images
+
+**Symptom:**
+```
+CI workflow completes but no image in Artifactory
+```
+
+**Solution:**
+1. Check GitHub Actions logs
+2. Verify "build-scan-publish" job completed
+3. Check "Docker Push" step for errors
+4. Verify Artifactory credentials are valid
+
+#### Issue 2: Wrong Image Version Deployed
+
+**Symptom:**
+```
+v1.yaml shows dockerImageTag: 1.0.3
+But Artifactory has 1.0.4, 1.0.5
+Old version keeps deploying
+```
+
+**Solution:**
+```bash
+# Check Artifactory for latest version
+# Update v1.yaml with correct tag
+dockerImageTag: 1.0.5
+
+# Commit and push
+git add deploy-configs/hcb-edmlprvdraaece-pdev/values/v1.yaml
+git commit -m "chore: update image tag to 1.0.5"
+git push origin pdev
+```
+
+#### Issue 3: Environment Variables Missing
+
+**Symptom:**
+```bash
+kubectl exec pod -- env | grep SPANNER
+# No output
+```
+
+**Solution:**
+1. Check if CD pipeline ran successfully
+2. Verify GitHub Environment has all 27 variables
+3. Check v1.yaml has injection comment
+4. Trigger CD manually by updating v1.yaml
+
+#### Issue 4: Semantic Versioning Not Working
+
+**Symptom:**
+```
+All images tagged with Git SHA instead of versions
+```
+
+**Solution:**
+1. Check if `.releaserc` file exists
+2. Verify commit messages use semantic format (`fix:`, `feat:`)
+3. Check CI logs for semantic-release errors
+
+#### Issue 5: Pod CrashLoopBackOff
+
+**Symptom:**
+```
+kubectl get pods
+NAME                     READY   STATUS             RESTARTS
+app-xyz                  0/1     CrashLoopBackOff   5
+```
+
+**Solution:**
+```bash
+# Check logs
+kubectl logs <pod-name> -n <namespace>
+
+# Common causes:
+# - Missing environment variables
+# - Database connection failed
+# - Application error
+
+# Check events
+kubectl describe pod <pod-name> -n <namespace>
+```
+
+### Debug Commands
+
+```bash
+# Check pod status
+kubectl get pods -n hcb-edmlprvdraaece-pdev
+
+# View pod logs
+kubectl logs -f <pod-name> -n hcb-edmlprvdraaece-pdev
+
+# Describe pod (see events)
+kubectl describe pod <pod-name> -n hcb-edmlprvdraaece-pdev
+
+# Execute into pod
+kubectl exec -it <pod-name> -n hcb-edmlprvdraaece-pdev -- /bin/sh
+
+# Check deployment
+kubectl get deployment -n hcb-edmlprvdraaece-pdev cost-estimator-calc-service -o yaml
+
+# Check service
+kubectl get svc -n hcb-edmlprvdraaece-pdev
+
+# Check ingress
+kubectl get ingress -n hcb-edmlprvdraaece-pdev
+```
+
+### Getting Help
+
+1. Check this README
+2. Review GitHub Actions logs
+3. Check Kubernetes pod logs
+4. Review [CI-CD-PIPELINE.md](./CI-CD-PIPELINE.md) for detailed documentation
+5. Contact DevOps team
+6. Open a GitHub issue
+
+---
+
+## Contributing
+
+### Development Guidelines
+
+1. **Write Tests**
+   - Unit tests for new features
+   - Integration tests for APIs
+   - Target: 80%+ code coverage
+
+2. **Use Semantic Commits**
+   - `feat:` for new features
+   - `fix:` for bug fixes
+   - `docs:` for documentation
+   - `chore:` for maintenance
+
+3. **Code Quality**
+   - Follow PEP 8 style guide
+   - Run linters before committing
+   - Keep functions small and focused
+
+4. **Security**
+   - Never commit secrets
+   - Use environment variables
+   - Run security scans
+
+### Pull Request Process
+
+1. Create feature branch from `pdev`
+2. Make changes and commit with semantic messages
+3. Push to remote and create Pull Request
+4. Wait for CI checks to pass
+5. Request code review
+6. Address feedback
+7. Merge after approval
+
+### Code Review Checklist
+
+- [ ] Tests added/updated
+- [ ] Documentation updated
+- [ ] Semantic commit messages used
+- [ ] No secrets in code
+- [ ] CI pipeline passes
+- [ ] Code follows style guide
+
+---
+
+## Quick Reference
+
+### Important URLs
+
+- **Repository:** https://github.com/cvs-health-source-code/cost-estimator-calc-service
+- **GitHub Actions:** https://github.com/cvs-health-source-code/cost-estimator-calc-service/actions
+- **Artifactory:** https://cvsh.jfrog.io
+- **GitHub Environments:** https://github.com/cvs-health-source-code/cost-estimator-calc-service/settings/environments
+
+### Common Commands
+
+```bash
+# Development
+pipenv install --dev
+pipenv shell
+pytest tests/
+python app/main.py
+
+# Version Management
+git tag --list | grep "^v" | tail -10
+git log --oneline -10
+
+# Deployment
+kubectl get pods -n hcb-edmlprvdraaece-pdev
+kubectl logs -f <pod-name> -n hcb-edmlprvdraaece-pdev
+kubectl exec -it <pod-name> -n hcb-edmlprvdraaece-pdev -- /bin/sh
+
+# CI/CD
+# Trigger CI: Push code to pdev/master
+# Trigger CD: Push v1.yaml change
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `app/main.py` | Application entry point |
+| `Dockerfile` | Container definition |
+| `Pipfile` | Python dependencies |
+| `.github/workflows/ci_pdev.yaml` | CI for pdev |
+| `.github/workflows/cd.yaml` | CD for deployments |
+| `deploy-configs/*/values/v1.yaml` | Kubernetes config |
+| `tests/` | Test suite |
+
+---
+
+## Project Structure
+
+```
+cost-estimator-calc-service/
+├── app/
+│   ├── api/
+│   │   ├── router.py
+│   │   └── routes/
+│   │       └── index.py
+│   ├── core/
+│   │   ├── base.py
+│   │   ├── constants.py
+│   │   ├── logger.py
+│   │   └── session_manager.py
+│   ├── models/
+│   │   ├── rate_criteria.py
+│   │   └── selected_benefit.py
+│   ├── services/
+│   │   ├── calculation_service.py
+│   │   ├── cost_estimation_service.py
+│   │   └── handlers/
+│   ├── repository/
+│   │   └── cost_estimator_repository.py
+│   └── main.py
+├── tests/
+│   ├── api/
+│   ├── services/
+│   └── conftest.py
+├── deploy-configs/
+│   ├── hcb-edmlprvdraaece-pdev/
+│   │   └── values/
+│   │       └── v1.yaml
+│   └── hcb-edmlprvdraaece-prod/
+│       └── values/
+│           └── v1.yaml
+├── .github/
+│   └── workflows/
+│       ├── ci.yaml
+│       ├── ci_pdev.yaml
+│       └── cd.yaml
+├── Dockerfile
+├── Pipfile
+├── Pipfile.lock
+└── README.md
+```
+
+---
+
+## License
+
+Copyright © 2025 CVS Health. All rights reserved.
+
+---
+
+## Support
+
+For questions, issues, or support:
+
+- **Documentation:** Review this README and [CI-CD-PIPELINE.md](./CI-CD-PIPELINE.md)
+- **Issues:** Open a GitHub issue with detailed information
+- **DevOps Team:** Contact via Slack or email
+- **On-Call:** Check PagerDuty for current on-call engineer
+
+---
+
+**Last Updated:** 2025-11-09  
+**Version:** 1.0.0  
+**Maintained By:** DevOps Team
+
+---
+
+## Appendix
+
+### A. Semantic Versioning Cheat Sheet
+
+```bash
+# Patch Release (Bug Fixes)
+git commit -m "fix: resolve connection timeout"
+# 1.0.2 → 1.0.3
+
+# Minor Release (New Features)
+git commit -m "feat: add payment retry logic"
+# 1.0.3 → 1.1.0
+
+# Major Release (Breaking Changes)
+git commit -m "feat!: redesign API
+
+BREAKING CHANGE: all endpoints now require v2 prefix"
+# 1.1.0 → 2.0.0
+
+# No Release
+git commit -m "chore: update documentation"
+# No version bump, uses Git SHA
+```
+
+### B. Environment Comparison
+
+| Aspect | Pdev | Prod |
+|--------|------|------|
+| **Branch** | pdev | master |
+| **Namespace** | hcb-edmlprvdraaece-pdev | hcb-edmlprvdraaece-prod |
+| **GCP Project** | edp-pdev-hcb-gke | edp-prod-hcb-gke |
+| **Replicas** | 1-1 | TBD |
+| **Resources** | 200m-500m CPU | TBD |
+| **RFC Required** | No | Yes |
+
+### C. Version History
+
+Check version history:
+```bash
+git tag --list | grep "^v"
+```
+
+View changelog:
+```bash
+git log --oneline --decorate --all --graph
+```
+
+---
+
+**End of README**
