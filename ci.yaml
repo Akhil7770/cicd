@@ -1,0 +1,19 @@
+name: Run Python Docker Pipelines
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - 'deploy-configs/**'
+      - 'README.md'
+      - '.github/workflows/cd.yaml'
+jobs:
+  python_docker_build:
+    uses: cvs-health-source-code/gha_workflow_actions/.github/workflows/python_docker.yaml@latest
+    with:
+      PYTHON_VERSION: "3.10"
+      PYTHON_DEPS_COMMAND: "pip install pipenv==2024.4.1; pipenv lock; pipenv install --system --deploy --dev"
+      DOCKERFILE_PATH: "./Dockerfile"
+      EXTRA_PARAMETERS_SNYK: "--file=Pipfile"
+      SKIP_UNRESOLVED_SNYK: "true"
+    secrets: inherit

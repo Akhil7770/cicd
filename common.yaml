@@ -1,0 +1,35 @@
+#app related data
+app:
+  name: cost-estimator-calc-service
+  port: 8000
+  gitRepoName: cvs-health-source-code/cost-estimator-calc-service
+
+
+#livenessProbe details
+livenessProbeDetails:
+  probePath: "/costestimator/v1/health"
+  initialDelaySeconds: 30
+
+#readinessProbe details
+readinessProbeDetails:
+  probePath: "/costestimator/v1/health"
+  initialDelaySeconds: 30
+
+#startupProbe details
+startupProbeDetails:
+  probePath: "/costestimator/v1/health"
+  initialDelaySeconds: 300
+  periodSeconds: 100
+  failureThreshold: 40
+
+istioHttp: | 
+  - match:
+    - uri:
+        prefix: /costestimator/welcome
+    route:
+    - destination:
+        host: {{ .Values.app.name }}.{{ .Values.appData.nameSpace }}.svc.cluster.local
+        port:
+          number: {{ .Values.app.port }}
+        subset: {{ regexReplaceAll "\\W+" .Values.istio.currentAppVersion "-" }}
+      weight: 100

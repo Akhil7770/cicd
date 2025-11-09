@@ -1,0 +1,174 @@
+name: App Deployment
+'on':
+  workflow_dispatch: null
+  push:
+    branches:
+      - master
+      - pdev
+    paths: ['**/values/v1.yaml']
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+jobs:
+  detect-changes:
+    runs-on:
+      group: cvs-linux-self-hosted
+    outputs:
+      CHANGED_ENVIRONMENTS: '${{ steps.set-matrix.outputs.CHANGED_ENVIRONMENTS }}'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Detect changes
+      id: changes
+      uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
+      with:
+        base: '${{ github.ref_name }}'
+        filters: |
+          hcb-edmlprvdraaece-prod_v1:
+          - '**/deploy-configs/hcb-edmlprvdraaece-prod/values/v1.yaml'
+          hcb-edmlprvdraaece-pdev_v1:
+          - '**/deploy-configs/hcb-edmlprvdraaece-pdev/values/v1.yaml'
+    - name: Build Environment Matrix
+      id: set-matrix
+      run: |
+        ENVS=()
+
+        if [ "${{ steps.changes.outputs.hcb-edmlprvdraaece-prod_v1 }}" = "true" ];
+        then
+          ENVS+=("{\"ENV_NAME\":\"hcb-edmlprvdraaece-prod\",\"HELM_FILE_VERSION\":\"v1\"}")
+        fi
+        if [ "${{ steps.changes.outputs.hcb-edmlprvdraaece-pdev_v1 }}" = "true" ];
+        then
+          ENVS+=("{\"ENV_NAME\":\"hcb-edmlprvdraaece-pdev\",\"HELM_FILE_VERSION\":\"v1\"}")
+        fi
+
+
+        if [ ${#ENVS[@]} -gt 0 ]; then
+          JSON=$(IFS=,; echo "[${ENVS[*]}]")
+          echo "CHANGED_ENVIRONMENTS=$JSON" >> $GITHUB_OUTPUT
+        else
+          echo "CHANGED_ENVIRONMENTS=[]" >> $GITHUB_OUTPUT
+        fi
+  inject-github-env-vars:
+    runs-on:
+      group: cvs-linux-self-hosted
+    needs: detect-changes
+    if: 'needs.detect-changes.outputs.CHANGED_ENVIRONMENTS != ''[]'''
+    environment: ${{ matrix.environment.ENV_NAME }}  # Dynamically select GitHub environment
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: '${{ fromJson(needs.detect-changes.outputs.CHANGED_ENVIRONMENTS) }}'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Inject GitHub Environment Variables into v1.yaml
+        run: |
+          VALUES_FILE="deploy-configs/${{ matrix.environment.ENV_NAME }}/values/${{ matrix.environment.HELM_FILE_VERSION }}.yaml"
+          
+          echo "Updating $VALUES_FILE with GitHub Environment variables..."
+          
+          # Replace the envVars section with values from GitHub Environment
+          cat > /tmp/env-vars-injection.yaml <<EOF
+          # environment variables for app - injected from GitHub Environment
+          envVars: |
+            - name: ENVIRONMENT
+              value: "${{ vars.ENVIRONMENT }}"
+            - name: SPANNER_PROJECT_ID
+              value: "${{ vars.SPANNER_PROJECT_ID }}"
+            - name: ENV_NAME
+              value: "${{ vars.ENV_NAME }}"
+            - name: SPANNER_INSTANCE_ID
+              value: "${{ vars.SPANNER_INSTANCE_ID }}"
+            - name: SPANNER_DATABASE_ID
+              value: "${{ vars.SPANNER_DATABASE_ID }}"
+            - name: BENEFITS_URL
+              value: "${{ vars.BENEFITS_URL }}"
+            - name: ACCUMULATOR_URL
+              value: "${{ vars.ACCUMULATOR_URL }}"
+            - name: TOKEN_URL
+              value: "${{ vars.TOKEN_URL }}"
+            - name: CLIENT_ID
+              value: "${{ vars.CLIENT_ID }}"
+            - name: CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: anbc-hcb-cet-pdev
+                  key: CLIENT_SECRET
+            - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+              value: "${{ vars.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT }}"
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: "${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}"
+            - name: OTEL_METRICS_EXPORTER
+              value: "${{ vars.OTEL_METRICS_EXPORTER }}"
+            - name: OTEL_TRACES_EXPORTER
+              value: "${{ vars.OTEL_TRACES_EXPORTER }}"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "${{ vars.OTEL_EXPORTER_OTLP_PROTOCOL }}"
+            - name: OTEL_LOGS_EXPORTER
+              value: "${{ vars.OTEL_LOGS_EXPORTER }}"
+            - name: OTEL_TRACES_SAMPLER
+              value: "${{ vars.OTEL_TRACES_SAMPLER }}"
+            - name: OTEL_PROPAGATORS
+              value: "${{ vars.OTEL_PROPAGATORS }}"
+            - name: OTEL_SERVICE_NAME
+              value: "${{ vars.OTEL_SERVICE_NAME }}"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "${{ vars.OTEL_RESOURCE_ATTRIBUTES }}"
+            - name: OTEL_PYTHON_DISABLED_INSTRUMENTATIONS
+              value: "${{ vars.OTEL_PYTHON_DISABLED_INSTRUMENTATIONS }}"
+            - name: OTEL_INSTRUMENTATION_HTTP_ENABLED
+              value: "${{ vars.OTEL_INSTRUMENTATION_HTTP_ENABLED }}"
+            - name: OTEL_INSTRUMENTATION_FASTAPI_ENABLED
+              value: "${{ vars.OTEL_INSTRUMENTATION_FASTAPI_ENABLED }}"
+            - name: OTEL_INSTRUMENTATION_HTTPX_ENABLED
+              value: "${{ vars.OTEL_INSTRUMENTATION_HTTPX_ENABLED }}"
+            - name: OTEL_INSTRUMENTATION_REQUESTS_ENABLED
+              value: "${{ vars.OTEL_INSTRUMENTATION_REQUESTS_ENABLED }}"
+            - name: OTEL_INSTRUMENTATION_AIOHTTP_CLIENT_ENABLED
+              value: "${{ vars.OTEL_INSTRUMENTATION_AIOHTTP_CLIENT_ENABLED }}"
+            - name: OTEL_INSTRUMENTATION_HTTP_SERVER_ENABLED
+              value: "${{ vars.OTEL_INSTRUMENTATION_HTTP_SERVER_ENABLED }}"
+          EOF
+          
+          # Use sed to replace the envVars section (delete from comment until blank line before workloadIdentity)
+          sed -i '/# environment variables for app/,/^$/d' "$VALUES_FILE"
+          cat /tmp/env-vars-injection.yaml >> "$VALUES_FILE"
+          
+          echo "✓ Environment variables injected successfully"
+          
+      - name: Commit updated values file
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deploy-configs/${{ matrix.environment.ENV_NAME }}/values/${{ matrix.environment.HELM_FILE_VERSION }}.yaml
+          git commit -m "chore: inject environment variables from GitHub Environment for ${{ matrix.environment.ENV_NAME }}" || echo "No changes to commit"
+          git push origin ${{ github.ref_name }}
+
+  deploy:
+    uses: >-
+      cvs-health-source-code/gitops-cd-workflow/.github/workflows/helm-deploy.yaml@v1
+    needs: [detect-changes, inject-github-env-vars]
+    if: 'needs.detect-changes.outputs.CHANGED_ENVIRONMENTS != ''[]'''
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: '${{ fromJson(needs.detect-changes.outputs.CHANGED_ENVIRONMENTS) }}'
+    secrets: inherit
+    with:
+      app-name: "cost-estimator-calc-service"
+      environment: ${{ matrix.environment.ENV_NAME }}
+      helm-template-repo: ${{ vars.HELM_TEMPLATE_REPO }}
+      helm-file-version: ${{ matrix.environment.HELM_FILE_VERSION }}
+      helm-template-branch: main
+      canary-weight: "0"
+      lob: "hcb"                           
+      change-description: "cost estimator calc service app deployment"
+      rfc-short-desc: "Deploy cost estimator calc service app changes to pdev"
+      change-domain: "edp"
+      change-impacted-website: "cvshealth.com"

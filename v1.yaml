@@ -1,0 +1,107 @@
+#namespace, app version and image details
+skipSecurityContext: true
+namespaceWorkloadIdentity:
+  serviceAccountName: default
+appData:
+  nameSpace: hcb-edmlprvdraaece-pdev
+  dockerHub: cvsh.jfrog.io
+  dockerImageGroupName: cvsdigital-docker/ghemu/cvs-health-source-code/cost-estimator-calc-service
+  dockerImageName: cost-estimator-calc-service
+  dockerImageTag: 1.0.3 
+
+#hpa settings - min and max replicas and minAvailable for PDB
+hpaSettings: 
+  minAvailable: 1
+  minReplicas: 1
+  maxReplicas: 1
+  averageUtilization: 80
+
+# Pod resource requests and limits
+resources:
+  requests:
+    cpu: "200m"
+    memory: "350Mi"
+  limits:
+    cpu: "500m"
+    memory: "1Gi"
+  
+workloadIdentity:
+  gcpProject: edp-pdev-hcb-gke
+  serviceAccountName: hcb-cet-ksa
+  serviceAccountEmail: hcb-edmlprvdraaece@edp-preprod-serviceops.iam.gserviceaccount.com
+
+# env secrets to be referred as ENV variables
+envSecrets: |
+  - secretRef: 
+      name: anbc-hcb-cet-pdev
+      optional: false
+
+# extraVolumeMounts: |
+#   - name: {{ ((index .Values.namespaceVaultSecrets 0)).name }}
+#     mountPath: /opt/digital/microservices/rxomni-drug-search/certs
+#     readOnly: true
+
+# extraVolumes: |
+#   - name: {{ ((index .Values.namespaceVaultSecrets 0)).name }}
+#     secret:
+#       secretName: {{ ((index .Values.namespaceVaultSecrets 0)).name }}
+#       optional: false
+# environment variables for app - injected from GitHub Environment
+envVars: |
+  - name: ENVIRONMENT
+    value: "pdev"
+  - name: SPANNER_PROJECT_ID
+    value: "edp-pdev-cet"
+  - name: ENV_NAME
+    value: "PDEV"
+  - name: SPANNER_INSTANCE_ID
+    value: "anbc-cet"
+  - name: SPANNER_DATABASE_ID
+    value: "cost-estimator-secure"
+  - name: BENEFITS_URL
+    value: "https://qaapi01.int.aetna.com/hcb/qapath2/hcb/v4/internal/servicesbenefits/details/retrieve"
+  - name: ACCUMULATOR_URL
+    value: "https://qaapi01.int.aetna.com/hcb/qapath2/internal/v5/membershipsaccumulators"
+  - name: TOKEN_URL
+    value: "https://qaapi01.int.aetna.com/healthcare/qapath2/v5/privapp/auth/oauth2/token"
+  - name: CLIENT_ID
+    value: "5ed6497d44e6a39631f45f7a9971decf"
+  - name: CLIENT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: anbc-hcb-cet-pdev
+        key: CLIENT_SECRET
+  - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+    value: "https://otelc-gmp-collector-grpc.hcb-pdev.aig.aetna.com"
+  - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+    value: "https://otelc-traces-collector-grpc.hcb-pdev.aig.aetna.com"
+  - name: OTEL_METRICS_EXPORTER
+    value: "otlpotlpotlp"
+  - name: OTEL_TRACES_EXPORTER
+    value: "otlp"
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    value: "grpc"
+  - name: OTEL_LOGS_EXPORTER
+    value: "none"
+  - name: OTEL_TRACES_SAMPLER
+    value: "always_on"
+  - name: OTEL_PROPAGATORS
+    value: "tracecontext,baggage"
+  - name: OTEL_SERVICE_NAME
+    value: "APM0016344"
+  - name: OTEL_RESOURCE_ATTRIBUTES
+    value: "service.name=APM0016344,service.version=1.0.0"
+  - name: OTEL_PYTHON_DISABLED_INSTRUMENTATIONS
+    value: ""
+  - name: OTEL_INSTRUMENTATION_HTTP_ENABLED
+    value: "true"
+  - name: OTEL_INSTRUMENTATION_FASTAPI_ENABLED
+    value: "true"
+  - name: OTEL_INSTRUMENTATION_HTTPX_ENABLED
+    value: "true"
+  - name: OTEL_INSTRUMENTATION_REQUESTS_ENABLED
+    value: "true"
+  - name: OTEL_INSTRUMENTATION_AIOHTTP_CLIENT_ENABLED
+    value: "true"
+  - name: OTEL_INSTRUMENTATION_HTTP_SERVER_ENABLED
+    value: "true"
