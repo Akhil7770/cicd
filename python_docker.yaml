@@ -1,0 +1,963 @@
+name: Python CI Pipeline
+env:
+  SCA_TOOL: snyk
+  CONTAINER_SCAN_TOOL: snyk
+  SAST_TOOL: snyk
+  ALLOWED_BRANCHES: ${{ vars.ALLOWED_BRANCHES || '' }}
+on:
+  workflow_call:
+    inputs:
+      RUNS_ON:
+        required: false
+        type: string
+        default: self-hosted
+      PYTHON_VERSION:
+        required: false
+        default: '3.12'
+        type: string
+      PYTHON_TEST_COMMAND:
+        required: false
+        default: "python3 -m pytest --junitxml=test-results/junit.xml tests"
+        type: string
+      PYTHON_LINT_COMMAND:
+        required: false
+        default: 'NA'
+        type: string
+      PYTHON_DEPS_COMMAND:
+        required: false
+        description: The command used to download dependencies
+        type: string
+        default: "pip install -r requirements.txt"
+      PYTHON_PACKAGE_MANAGER:
+        required: false
+        description: "The python package manager used for the project, supported values are: pip, poetry, uv"
+        type: string
+        default: "pip"
+      PYTHON_PACKAGE_MANAGER_VERSION:
+        required: false
+        description: The version to use for the python package manager. If none are provided, a sane default will be selected.
+        type: string
+        default: ""
+      PYTHON_DEV_DEPS_COMMAND:
+        required: false
+        description: The command used to download dependencies
+        type: string
+        default: "NA"
+      PYTHON_BUILD_COMMAND:
+        required: false
+        description: The command used to build the application
+        type: string
+        default:  "python3 setup.py bdist_wheel sdist"
+      CACHE_DEPENDENCY_PATH:
+        required: false
+        type: string
+        default: "requirements.txt"
+      WORKSPACE:
+        required: false
+        default: ${{ github.workspace }}
+        type: string
+      RUN_SONAR_SCAN:
+        required: false
+        default: true
+        description: Enable Sonar scan
+        type: boolean
+      SKIP_SEMANTIC:
+        required: false
+        type: boolean
+        default: false
+      PUSH_REGISTRY:
+        required: false
+        type: string
+        default: ""
+      VULN_THRESHOLD_SAST:
+        required: false
+        type: string
+        default: "high"
+        description: |
+          severity to fail pipeline for security vulnerabilities for non-checkmarx SAST scans. 
+          If any vulnerability is found at or over the given threshold, then the job will fail. 
+          Options are: low, medium, high
+      VULN_THRESHOLD_CONTAINER:
+        description: |
+          Severity to fail pipeline for security vulnerabilities. 
+          If any vulnerability is found at or over the given threshold, then the job will fail. 
+          Options are: low, medium, high
+        type: string
+        default: "high"
+      COMP_THRESHOLD_CONTAINER:
+        description: |
+          severity to fail pipeline for security vulnerabilities. 
+          If any vulnerability is found at or over the given threshold, then the job will fail. 
+          Options are: low, medium, high
+        type: string
+        default: "high"
+      ARTIFACT_SCA:
+        required: false
+        type: string
+        description: Normally this is fine to leave blank, but if Snyk is having a hard time finding it, it can be defined here.
+      WORKING_DIRS_SCA:
+        description: Comma-separated list of directories to perform SCA scanning on
+        default: '.'
+        type: string
+      VULN_THRESHOLD_SCA:
+        description: |
+          Severity to fail pipeline for security vulnerabilities. 
+          If any vulnerability is found at or over the given threshold, then the job will fail. 
+          Options are: low, medium, high
+        type: string
+        default: "high"
+      SCA_TOOL:
+        description: Which SCA scanning tool to use. Valid options are "xray" and "snyk"
+        type: string
+        default: snyk
+      CONTAINER_SCAN_TOOL:
+        description: Which SCA scanning tool to use. Valid options are "prisma" and "snyk"
+        type: string
+        default: snyk
+      SAST_TOOL:
+        description: Which SCA scanning tool to use. Valid options are "checkmarx" and "snyk"
+        type: string
+        default: snyk
+      SNYK_ORG:
+        description: id of the Snyk org to monitor project under
+        type: string
+        required: false
+      EXTRA_PARAMETERS_SNYK:
+        description: Additional parameters to add to scan command
+        type: string
+        default: ''
+      ON_RELEASE_BRANCH:
+        description: |
+          Is this branch a release branch? By default, it's trunk-based development
+          valid availabe options:
+          - 'trunk-based'
+          - 'true'
+          - 'false'
+        type: string
+        default: 'trunk-based'
+      GITHUB_ORG_NAME:
+        required: false
+        default: "${{ github.repository_owner }}"
+        type: string
+      GITHUB_REPO_NAME:
+        required: false
+        default: "${{ github.event.repository.name }}"
+        type: string
+      SONAR_INPUT_ARGS:
+        required: false
+        type: string
+        description: 'SONAR Scan Args for eg -Dsonar.qualitygate.timeout=600 is for extending the waiting time for sonar scan output '
+        default: ""
+      SONAR_JAVA_VERSION:
+        required: false
+        type: string
+        default: "18"
+      SONAR_QUALITY_GATE:
+        default: sonar_devex
+        description: Quality gate that needs to be applied for sonar scan
+        type: string
+      project_root:
+        type: string
+        description: Only use if you are already installing dependencies, and if the Snyk output is recommending this option
+      ALL_PROJECTS_SNYK:
+        required: false
+        type: string
+        description: scan all dependency files in a repo
+      SKIP_UNRESOLVED_SNYK:
+        required: false
+        type: string
+        description: Only use if you are already installing dependencies, and if the Snyk output is recommending this option
+      GENERATE_SEMANTIC_RELEASERC_FILE:
+        default: true
+        type: boolean
+      ARTIFACT_NAME:
+        type: string
+        default: ${{ github.event.repository.name }}
+        description: "The name of the artifact to be built. The repository name will be used by default."
+      IMAGE_TAG_VERSION:
+        type: string
+        default: ""
+        description: "The image tag version that needs to used instead of semantic version"
+      USE_LATEST_TAG:
+        description: |
+          This tag will be used when building the docker image. If empty, this will be automatically done based on on-release-branch.if its set to true then latest tag would be applied
+        type: string
+        default: 'false'
+      DOCKER_REGISTRY_NAME:
+        description: Jfrog artifactory docker registry name defaulted to cvsdigital-docker
+        required: false
+        type: string
+        default: "cvsdigital-docker"
+      DOCKERFILE_PATH:
+        type: string
+        default: "./Dockerfile"
+      DOCKER_PUBLISH:
+        type: boolean
+        default: true
+      DOCKER_BUILD_FLAGS:
+        description: Additional flags to be used in the docker build command, if required.
+        default: ''
+        type: string
+      LIBRARY_PUBLISH:
+        description: Publish Library Artifact
+        required: false
+        default: false
+        type: boolean
+      CD_DEPLOY_FILE:
+        required: false
+        default: "NA"
+        type: string
+      CD_IMAGE_PR_REFRESH_TIMEOUT:
+        description: "Default refresh timeout"
+        type: number
+        default: 30
+      CD_IMAGE_PR_SLEEP_TIMEOUT:
+        description: "Default Sleep timeout"
+        type: number
+        default: 20
+      SECURITY_GATE_TEAM_NAME:
+        description: 'The name of the folder to find the Security Gate Pattern in https://github.com/cvs-health-source-code/team-patterns/security-gate'
+        type: string
+        default: ''
+      FAIL_ON_TESTING:
+        description: Block publishing if unit testing fails
+        type: boolean
+        default: false
+        required: false
+      HOTFIX_RELEASE:
+        required: false
+        default: true         
+        type: boolean
+      HOTFIX_RELEASE_BRANCH:
+        required: false
+        default: "hotfix"
+        type: string
+      UPLOAD_SARIF:
+        required: false
+        default: false
+        type: boolean
+      CACHE_PATH:
+        description: 'Path to cache dependencies'
+        type: string
+        default: ~/.cache/pip
+      BUILD_CACHE_PATH:
+        description: 'Path to cache dependencies'
+        type: string
+        default: |
+          dist/*
+          ./build/*
+      CACHE_KEY:
+        description: 'Cache key to use for caching dependencies'
+        type: string
+        default: "**/requirements.txt"
+      VAULT_ROLE_ID:
+        description: "Role ID for Vault, if you want project level secrets imported. Leave blank to disable."
+        required: false
+        default: ""
+        type: string
+      VAULT_SECRET_ID:
+        description: "Secret ID for Vault, if you want project level secrets imported. Leave blank to disable."
+        required: false
+        default: ""
+        type: string
+      VAULT_ENGINE_NAME:
+        description: "Engine name for Vault, if you want project level secrets imported. Leave blank to disable."
+        required: false
+        default: ""
+        type: string
+      VAULT_ADDRESS:
+        description: "Address for Vault, if you want project level secrets imported. Leave blank to disable. Options are: https://vault-nonprod.cvshealth.com or https://vault-prod.cvshealth.com"
+        required: false
+        default: "https://vault-nonprod.cvshealth.com"
+        type: string
+      VAULT_PATH:
+        description: "Path for Vault, if you want project level secrets imported."
+        required: false
+        default: ""
+        type: string
+      VAULT_BASE64_DECODE:
+        description: "Autodetects base64 encoding in project level secrets, and provides both a secret=value and secret_base64=value"
+        required: false
+        default: "true"
+        type: string
+      SCA_BUILD_PARAMS:
+        description: "Additional parameters to pass to the SCA build command"
+        required: false
+        default: ""
+        type: string
+      #Below are no longer used retained to prevent teams workflow failing
+      HARNESS_DEPLOY_FILE:
+        required: false
+        default: "NA"
+        type: string
+      HARNESS_IMAGE_PR_REFRESH_TIMEOUT:
+        description: "Default refresh timeout"
+        type: number
+        default: 30
+      HARNESS_IMAGE_PR_SLEEP_TIMEOUT:
+        description: "Default Sleep timeout"
+        type: number
+        default: 20
+    outputs:
+      imageid:
+        description: "Imageid generated from Docker publish"
+        value: ${{ jobs.build-scan-publish.outputs.imageid }}
+      digest:
+        description: "Digest generated from Docker publish"
+        value: ${{ jobs.build-scan-publish.outputs.digest }}
+      image-name:
+        description: "Name of the docker image Generated."
+        value: ${{ jobs.build-scan-publish.outputs.image-name }}
+      image-version:
+        description: "Version of the docker image"
+        value: ${{ jobs.build-scan-publish.outputs.image-version }}
+      image-location:
+        description: "Location/registry of the docker image"
+        value: ${{ jobs.build-scan-publish.outputs.image-location }}
+      git-sha:
+        description: "Outputs the Git sha that generated the docker image"
+        value: ${{ jobs.build-scan-publish.outputs.git-sha }}
+      workflow_status:
+        description: "Outputs the workflow status"
+        value: ${{ jobs.build-scan-publish.result }}
+
+jobs:
+  setup:
+    name: "Setup Pipeline"
+    runs-on: ${{ inputs.RUNS_ON }}
+    outputs:
+      ENABLE_GATING: ${{ steps.prep_step.outputs.ENABLE_GATING }}
+      BRANCH_PUSH: ${{ steps.allow-push.outputs.allow_push }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Prep Step
+        id: prep_step
+        uses: cvs-health-source-code/gha_workflow_actions/actions/prep_step@latest
+        with:
+          APP_OWNER: "cvs-health-source-code"
+          DEVEX_VAULT_SECRET_ID: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+          VAULT_ROLE_ID: ${{ inputs.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+          VAULT_ENGINE_NAME: ${{ inputs.VAULT_ENGINE_NAME }}
+          VAULT_ADDRESS: ${{ inputs.VAULT_ADDRESS }}
+          VAULT_PATH: ${{ inputs.VAULT_PATH }}
+          VAULT_BASE64_DECODE: ${{ inputs.VAULT_BASE64_DECODE }}
+          ORG: ${{ github.event.organization.login }}
+          REPO: ${{ github.event.repository.name }}
+      - name: Metadata Label
+        run: |
+          echo "Beginning Metadata Verification..."
+      - name: Create Labels
+        uses: cvs-health-source-code/Secure-Pipeline-Scans/gha/create-labels@v2
+        with:
+          artifactory_token: ${{ env.JFROG_READER_TOKEN }}
+          artifactory_username: ${{ env.JFROG_READER_USERNAME }}
+          workspace: ${{ github.workspace }}
+          gh-app-id: ${{ env.GHA_WORKFLOW_APP_ID }}
+          gh-app-private-key: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.PYTHON_VERSION }}
+      - name: Restore Cached Dependencies
+        uses: cvs-health-source-code/gha_workflow_actions/actions/cache@latest
+        id: cache
+        with:
+          cache_path: ${{ inputs.CACHE_PATH }}
+          key: ${{ runner.os }}-${{ hashFiles(inputs.CACHE_KEY) }}
+          restore_cache: true
+          save_cache: false
+          type: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+      - name: Generate a GH auth token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.GHA_WORKFLOW_APP_ID }}
+          private-key: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+          owner: ${{ github.event.organization.login }}
+      - name: Check branches for push
+        id: allow-push
+        uses: cvs-health-source-code/gha_workflow_actions/actions/branch_check@latest
+        with:
+          push_on_branches : "${{ env.ALLOWED_BRANCHES }}"
+          default_branch: "${{ github.event.repository.default_branch }}"
+          current_branch: "${{ github.ref_name }}"
+          org: "${{ github.event.organization.login }}"
+          ghtoken: "${{ steps.generate_token.outputs.token }}"
+          branch_pattern: "${{ steps.prep_step.outputs.PUSH_BRANCH_PATTERN }}"
+          commit_message: "${{ github.event.head_commit.message }}"
+      - name: Setup Python environment
+        uses: cvs-health-source-code/gha_workflow_actions/actions/python_setup_install@latest
+        with:
+          PACKAGE_MANAGER: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+          PACKAGE_MANAGER_VERSION: ${{ inputs.PYTHON_PACKAGE_MANAGER_VERSION }}
+          ARTIFACTORY_TOKEN: ${{ env.JFROG_READER_TOKEN }}
+          ARTIFACTORY_USERNAME: ${{ env.JFROG_READER_USERNAME }}
+      - name: Download Dependencies
+        shell: bash
+        run: ${{ inputs.PYTHON_DEPS_COMMAND }}
+        env:
+          ARTIFACTORY_TOKEN: ${{ env.JFROG_READER_TOKEN }}
+          ARTIFACTORY_USERNAME: ${{ env.JFROG_READER_USERNAME }}
+      - name: Cache Dependencies
+        uses: cvs-health-source-code/gha_workflow_actions/actions/cache@latest
+        with:
+          cache_path: ${{ inputs.CACHE_PATH }}
+          key: ${{ runner.os }}-${{ hashFiles(inputs.CACHE_KEY) }}
+          restore_cache: false
+          save_cache: true
+          type: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+      - name: Generate a token Auth to github  
+        id: generate_token_source
+        uses: actions/create-github-app-token@v2
+        with:    
+          app-id: ${{ env.GHA_WORKFLOW_APP_ID }}
+          private-key: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+          owner: "cvs-health-source-code"
+      - name: Get Pipeline Config
+        id: gated_value
+        uses: cvs-health-source-code/gha_workflow_actions/actions/get_pipeline_config@latest
+        with:
+          gh-token: ${{ steps.generate_token.outputs.token }}
+
+  test:
+    name: Test
+    runs-on: ${{ inputs.RUNS_ON }}
+    needs: setup
+    if: ${{ inputs.PYTHON_TEST_COMMAND != 'NA' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Prep Step
+        id: prep_step
+        uses: cvs-health-source-code/gha_workflow_actions/actions/prep_step@latest
+        with:
+          APP_OWNER: "cvs-health-source-code"
+          DEVEX_VAULT_SECRET_ID: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+          VAULT_ROLE_ID: ${{ inputs.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+          VAULT_ENGINE_NAME: ${{ inputs.VAULT_ENGINE_NAME }}
+          VAULT_ADDRESS: ${{ inputs.VAULT_ADDRESS }}
+          VAULT_PATH: ${{ inputs.VAULT_PATH }}
+          VAULT_BASE64_DECODE: ${{ inputs.VAULT_BASE64_DECODE }}
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.PYTHON_VERSION }}
+      - name: Restore Cached Dependencies
+        uses: cvs-health-source-code/gha_workflow_actions/actions/cache@latest
+        id: cache
+        with:
+          cache_path: ${{ inputs.CACHE_PATH }}
+          key: ${{ runner.os }}-${{ hashFiles(inputs.CACHE_KEY) }}
+          restore_cache: true
+          save_cache: false
+          type: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+      - name: Setup Python environment
+        uses: cvs-health-source-code/gha_workflow_actions/actions/python_setup_install@latest
+        with:
+          PACKAGE_MANAGER: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+          PACKAGE_MANAGER_VERSION: ${{ inputs.PYTHON_PACKAGE_MANAGER_VERSION }}
+          ARTIFACTORY_TOKEN: ${{ env.JFROG_READER_TOKEN }}
+          ARTIFACTORY_USERNAME: ${{ env.JFROG_READER_USERNAME }}
+      - name: Set required variables
+        uses: cvs-health-source-code/gha_workflow_actions/actions/set_env_var@latest
+        with:
+          SECRETS_CONTEXT: ${{ toJSON(secrets) }}
+          VARS_CONTEXT: ${{ toJSON(vars) }}
+      - name: Download Dependencies
+        shell: bash
+        run: ${{ inputs.PYTHON_DEPS_COMMAND }}
+        env:
+          ARTIFACTORY_TOKEN: ${{ env.JFROG_READER_TOKEN }}
+          ARTIFACTORY_USERNAME: ${{ env.JFROG_READER_USERNAME }}
+      - name: Install Dev Dependencies
+        shell: bash
+        if: ${{ inputs.PYTHON_DEV_DEPS_COMMAND != 'NA' }}
+        run: ${{ inputs.PYTHON_DEV_DEPS_COMMAND }}
+      - name: Run tests
+        shell: bash
+        run: ${{ inputs.PYTHON_TEST_COMMAND }}
+      - name: Generate a GH auth token
+        id: generate_token
+        uses: cvs-health-source-code/cvs-gha-github-app-token@v2.1.0
+        with:
+          app_id: ${{ env.GHA_WORKFLOW_APP_ID }}
+          private_key: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+      - name: Run SonarQube
+        if: ${{ inputs.RUN_SONAR_SCAN != false }}
+        uses: cvs-health-source-code/gha_workflow_actions/actions/sonar_scan@latest
+        with:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          PROJECT_NAME: ${{ inputs.GITHUB_ORG_NAME }}_${{ inputs.GITHUB_REPO_NAME }}
+          SONAR_JAVA_VERSION: ${{ inputs.SONAR_JAVA_VERSION }}
+          GITHUB_ORG: ${{ inputs.GITHUB_ORG_NAME }}
+          PROJECT_KEY: "${{ inputs.GITHUB_ORG_NAME }}_${{ inputs.GITHUB_REPO_NAME }}"
+          INPUT_ARGS: ${{ inputs.SONAR_INPUT_ARGS }}
+          SONAR_QUALITY_GATE: ${{ inputs.SONAR_QUALITY_GATE }}
+          SECURITY_GATE_TEAM_NAME: ${{ inputs.SECURITY_GATE_TEAM_NAME }}
+          GITHUB_TOKEN: ${{ steps.generate_token.outputs.token }}
+
+  lint:
+    name: Lint
+    runs-on: ${{ inputs.RUNS_ON }}
+    needs: setup
+    if: ${{ inputs.PYTHON_LINT_COMMAND != 'NA' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Prep Step
+        id: prep_step
+        uses: cvs-health-source-code/gha_workflow_actions/actions/prep_step@latest
+        with:
+          APP_OWNER: "cvs-health-source-code"
+          DEVEX_VAULT_SECRET_ID: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+          VAULT_ROLE_ID: ${{ inputs.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+          VAULT_ENGINE_NAME: ${{ inputs.VAULT_ENGINE_NAME }}
+          VAULT_ADDRESS: ${{ inputs.VAULT_ADDRESS }}
+          VAULT_PATH: ${{ inputs.VAULT_PATH }}
+          VAULT_BASE64_DECODE: ${{ inputs.VAULT_BASE64_DECODE }}
+      - name: Restore Cached Dependencies
+        uses: cvs-health-source-code/gha_workflow_actions/actions/cache@latest
+        id: cache
+        with:
+          cache_path: ${{ inputs.CACHE_PATH }}
+          key: ${{ runner.os }}-${{ hashFiles(inputs.CACHE_KEY) }}
+          restore_cache: true
+          save_cache: false
+          type: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+      - name: Setup Python environment
+        uses: cvs-health-source-code/gha_workflow_actions/actions/python_setup_install@latest
+        with:
+          PACKAGE_MANAGER: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+          PACKAGE_MANAGER_VERSION: ${{ inputs.PYTHON_PACKAGE_MANAGER_VERSION }}
+          ARTIFACTORY_TOKEN: ${{ env.JFROG_READER_TOKEN }}
+          ARTIFACTORY_USERNAME: ${{ env.JFROG_READER_USERNAME }}
+      - name: Install Dev Dependencies
+        shell: bash
+        if: ${{ inputs.PYTHON_DEV_DEPS_COMMAND != 'NA' }}
+        run: ${{ inputs.PYTHON_DEV_DEPS_COMMAND }}
+      - name: Run linter
+        run: ${{ inputs.PYTHON_LINT_COMMAND}} 
+        continue-on-error: true
+
+  sast-scan:
+    name: SAST Scan
+    runs-on: ${{ inputs.RUNS_ON }}
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prep Step
+        id: prep_step
+        uses: cvs-health-source-code/gha_workflow_actions/actions/prep_step@latest
+        with:
+          APP_OWNER: "cvs-health-source-code"
+          DEVEX_VAULT_SECRET_ID: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+          VAULT_ROLE_ID: ${{ inputs.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+          VAULT_ENGINE_NAME: ${{ inputs.VAULT_ENGINE_NAME }}
+          VAULT_ADDRESS: ${{ inputs.VAULT_ADDRESS }}
+          VAULT_PATH: ${{ inputs.VAULT_PATH }}
+          VAULT_BASE64_DECODE: ${{ inputs.VAULT_BASE64_DECODE }}
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.PYTHON_VERSION }}
+      - name: Restore Cached Dependencies
+        uses: cvs-health-source-code/gha_workflow_actions/actions/cache@latest
+        id: cache
+        with:
+          cache_path: ${{ inputs.CACHE_PATH }}
+          key: ${{ runner.os }}-${{ hashFiles(inputs.CACHE_KEY) }}
+          restore_cache: true
+          save_cache: false
+          type: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+      - name: Initiate SAST Scan (Snyk)
+        uses: cvs-health-source-code/secure-pipeline-scans/gha/sast-scan/snyk@v2
+        with:
+          snyk-token: ${{ env.SNYK_TOKEN }}
+          snyk-token-pool: ${{ env.SNYK_TOKEN_POOL }}
+          snyk-org: ${{ inputs.SNYK_ORG }}
+          gh-app-private-key: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+          gh-app-id: ${{ env.GHA_WORKFLOW_APP_ID }}
+          github-app-key: ${{ env.SECOPS_GH_APP_KEY_base64 }}
+          workspace: ${{ github.workspace }}
+          severity-threshold: ${{ inputs.VULN_THRESHOLD_SAST }}
+          dso-kafka-key: ${{ env.DSO_KAFKA_API_KEY_base64 }}
+          dso-kafka-secret: ${{ env.DSO_KAFKA_API_SECRET_base64 }}
+          dso-kafka-prod-key: ${{ env.KAFKA_PROD_API_KEY_base64 }}
+          dso-kafka-prod-secret: ${{ env.KAFKA_PROD_API_SECRET_base64 }}
+          devex-vault-secret-id: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+
+  sca-scan:
+    name: SCA Scan
+    runs-on: ${{ inputs.RUNS_ON }}
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prep Step
+        id: prep_step
+        uses: cvs-health-source-code/gha_workflow_actions/actions/prep_step@latest
+        with:
+          APP_OWNER: "cvs-health-source-code"
+          DEVEX_VAULT_SECRET_ID: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+          VAULT_ROLE_ID: ${{ inputs.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+          VAULT_ENGINE_NAME: ${{ inputs.VAULT_ENGINE_NAME }}
+          VAULT_ADDRESS: ${{ inputs.VAULT_ADDRESS }}
+          VAULT_PATH: ${{ inputs.VAULT_PATH }}
+          VAULT_BASE64_DECODE: ${{ inputs.VAULT_BASE64_DECODE }}
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version:  ${{ inputs.PYTHON_VERSION }} 
+      - name: Restore Cached Dependencies
+        uses: cvs-health-source-code/gha_workflow_actions/actions/cache@latest
+        id: cache
+        with:
+          cache_path: ${{ inputs.CACHE_PATH }}
+          key: ${{ runner.os }}-${{ hashFiles(inputs.CACHE_KEY) }}
+          restore_cache: true
+          save_cache: false
+          type: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+      - name: Setup Python environment
+        uses: cvs-health-source-code/gha_workflow_actions/actions/python_setup_install@latest
+        with:
+          PACKAGE_MANAGER: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+          PACKAGE_MANAGER_VERSION: ${{ inputs.PYTHON_PACKAGE_MANAGER_VERSION }}
+          ARTIFACTORY_TOKEN: ${{ env.JFROG_READER_TOKEN }}
+          ARTIFACTORY_USERNAME: ${{ env.JFROG_READER_USERNAME }}
+      - name: Install dependencies
+        shell: bash
+        run: ${{ inputs.PYTHON_DEPS_COMMAND }}
+      - name: Initiate SCA Scan (Snyk)
+        uses: cvs-health-source-code/Secure-Pipeline-Scans/gha/sca-scan/snyk@v2
+        with:
+          snyk-token: ${{ env.SNYK_TOKEN }}
+          snyk-token-pool: ${{ env.SNYK_TOKEN_POOL }}
+          snyk-org: ${{ inputs.SNYK_ORG }}
+          github-app-key: ${{ env.SECOPS_GH_APP_KEY_base64 }}
+          artifactory_username: ${{ env.JFROG_READER_USERNAME }}
+          artifactory_token: ${{ env.JFROG_READER_TOKEN }}
+          workspace: ${{ github.workspace }}
+          working-dirs: ${{ inputs.WORKING_DIRS_SCA }}
+          severity-threshold: ${{ inputs.VULN_THRESHOLD_SCA }}
+          extra-parameters: ${{ inputs.EXTRA_PARAMETERS_SNYK }}
+          artifact: ${{ inputs.ARTIFACT_SCA }}
+          all-projects: ${{ inputs.ALL_PROJECTS_SNYK }}
+          skip-unresolved: ${{ inputs.SKIP_UNRESOLVED_SNYK }}
+          security_gate_team_name: ${{ inputs.SECURITY_GATE_TEAM_NAME }}
+          dso-kafka-key: ${{ env.DSO_KAFKA_API_KEY_base64 }}
+          dso-kafka-secret: ${{ env.DSO_KAFKA_API_SECRET_base64 }}
+          dso-kafka-prod-key: ${{ env.KAFKA_PROD_API_KEY_base64 }}
+          dso-kafka-prod-secret: ${{ env.KAFKA_PROD_API_SECRET_base64 }}
+          gh-app-id: ${{ env.GHA_WORKFLOW_APP_ID }}
+          gh-app-private-key: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+          build-params: ${{ inputs.SCA_BUILD_PARAMS }}
+          devex-vault-secret-id: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+
+  build-scan-publish:
+    name: "Build/Scan/Publish"
+    runs-on: ${{ inputs.RUNS_ON }}
+    needs: [setup, sca-scan, sast-scan, test]
+    outputs:
+      release_tag: ${{ steps.assign_vars.outputs.RELEASE_TAG }}
+      imageid: ${{ steps.docker-outputs.outputs.imageid }}
+      digest: ${{ steps.docker-outputs.outputs.digest }}
+      image-name: ${{ steps.docker-outputs.outputs.image-name }}
+      image-version: ${{ steps.docker-outputs.outputs.image-version }}
+      image-location: ${{ steps.docker-outputs.outputs.image-location }}
+      git-sha: ${{ steps.docker-outputs.outputs.git-sha }}
+    if: | 
+      always() &&
+      !contains(needs.setup.result, 'failure') &&
+      !contains(needs.setup.result, 'cancelled') &&
+      !contains(needs.sca-scan.result, 'failure') &&
+      !contains(needs.sca-scan.result, 'cancelled') &&
+      !contains(needs.sast-scan.result, 'failure') &&
+      !contains(needs.sast-scan.result, 'cancelled') &&
+      !(fromJson(inputs.FAIL_ON_TESTING) && 
+        needs.test.result == 'failure' && 
+        needs.test.result == 'cancelled')
+    steps:
+      # Setup
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Prep Step
+        id: prep_step
+        uses: cvs-health-source-code/gha_workflow_actions/actions/prep_step@latest
+        with:
+          APP_OWNER: "cvs-health-source-code"
+          DEVEX_VAULT_SECRET_ID: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+          VAULT_ROLE_ID: ${{ inputs.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+          VAULT_ENGINE_NAME: ${{ inputs.VAULT_ENGINE_NAME }}
+          VAULT_ADDRESS: ${{ inputs.VAULT_ADDRESS }}
+          VAULT_PATH: ${{ inputs.VAULT_PATH }}
+          VAULT_BASE64_DECODE: ${{ inputs.VAULT_BASE64_DECODE }}
+      - name: Save artifactory username and token
+        id: save_artifactory_creds
+        run: |
+          echo "ARTIFACTORY_USERNAME=${{ env.ARTIFACTORY_USERNAME }}" >> $GITHUB_OUTPUT
+          echo "ARTIFACTORY_TOKEN=${{ env.ARTIFACTORY_TOKEN }}" >> $GITHUB_OUTPUT
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.PYTHON_VERSION }}
+      - name: Restore dependencies
+        uses: cvs-health-source-code/gha_workflow_actions/actions/cache@latest
+        with:
+          cache_path: ${{ inputs.BUILD_CACHE_PATH }}
+          key: ${{ runner.os }}-${{ hashFiles(inputs.BUILD_CACHE_PATH) }}-${{ hashFiles('.github') }}
+          restore_cache: true
+          save_cache: false
+          type: ${{ inputs.PYTHON_PACKAGE_MANAGER }}
+      - name: "Determine if release branch"
+        id: "release_branch"
+        run: |
+          branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
+          echo "Detected branch: $branch"
+          if [[ "${{ inputs.SKIP_SEMANTIC }}" == "false" && \
+              ($branch == "main" || $branch == "master" || \
+              (${{ inputs.HOTFIX_RELEASE }} == true && $branch == ${{ inputs.HOTFIX_RELEASE_BRANCH }} )) ]]; then
+              echo "on_release_branch='true'"
+              branch=${{ inputs.HOTFIX_RELEASE_BRANCH }}
+              echo "Detected branch: $branch"
+          else 
+            echo "on_release_branch=''"
+            branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
+            echo "Detected branch: $branch"
+          fi
+      # Get Release Version
+      - name: Custom Image tag
+        if: ${{ inputs.IMAGE_TAG_VERSION != '' }}
+        run: |
+          echo "Utilizing custom image tag: ${{ inputs.IMAGE_TAG_VERSION }}"
+          echo "${{  inputs.IMAGE_TAG_VERSION }}"
+          rm -f release.version
+          echo "${{ inputs.IMAGE_TAG_VERSION }}" > release.version
+          cat release.version
+      - name: Semantic Release
+        if: ${{ inputs.IMAGE_TAG_VERSION == '' && toJSON(inputs.SKIP_SEMANTIC) == 'false' && needs.setup.outputs.BRANCH_PUSH == 'true' }}
+        uses: cvs-health-source-code/gha_workflow_actions/actions/semantic_release@latest
+        with:
+          WITH_RELEASERC:  ${{ toJSON(inputs.GENERATE_SEMANTIC_RELEASERC_FILE) }}
+          APP_ID: ${{ env.GHA_WORKFLOW_APP_ID }}
+          PRIVATE_KEY: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+      - name: Assign Variables
+        id: assign_vars
+        run: |
+          if [ ! -f release.version ]; then
+            echo "Release version not exists as there were no release"
+            touch release.version
+          fi
+          TAG_VERSION=$(cat release.version)
+
+          # RELEASE_TAG
+          if [[ -z "$TAG_VERSION" ]]; then
+            echo "TAG_VERSION was not found into release.version file using run_id value '${GITHUB_SHA}' as TAG_VERSION"
+            TAG_VERSION="${GITHUB_SHA}"
+          fi
+          echo "RELEASE_TAG=$TAG_VERSION" >> $GITHUB_OUTPUT
+          echo "RELEASE_TAG=$TAG_VERSION" >> $GITHUB_ENV
+
+          # BRANCH_NAME
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            echo "BRANCH_NAME=$(echo ${GITHUB_REF##*/})" >> $GITHUB_ENV
+          elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            echo "BRANCH_NAME=$(echo $GITHUB_BASE_REF)" >> $GITHUB_ENV
+          else
+            echo "No branch"
+            echo "BRANCH_NAME=$(echo $DUMMY)" >> $GITHUB_ENV
+          fi
+      # Build if necessary
+      - name: Python Build
+        uses: cvs-health-source-code/gha_workflow_actions/actions/python_build@latest
+        if: ${{ inputs.PYTHON_BUILD_COMMAND != 'NA' }}
+        with:
+          PYTHON_BUILD_COMMAND:  ${{ inputs.PYTHON_BUILD_COMMAND }}
+      # Publish artifact if necessary
+      - name: Publish to JFrog Artifactory
+        if: ${{ inputs.LIBRARY_PUBLISH && needs.setup.outputs.BRANCH_PUSH == 'true' }}
+        shell: bash
+        run: |
+          pip3 install twine
+          repositoryUrl=https://cvsh.jfrog.io/artifactory/api/pypi/cvsdigital-pypi-local
+          python3 -m twine upload --verbose --repository-url $repositoryUrl -u ${{ env.ARTIFACTORY_USERNAME }} -p ${{ env.ARTIFACTORY_TOKEN}} dist/*
+      # Docker Build
+      - name: Docker Build
+        id: docker-build
+        uses: cvs-health-source-code/secure-pipeline-scans/gha/docker-build@v2
+        with:
+          dockerfile: ${{ inputs.DOCKERFILE_PATH }}
+          artifact_name: ${{ inputs.ARTIFACT_NAME }}
+          release-tag: ${{ steps.assign_vars.outputs.RELEASE_TAG }}
+          docker_registry_name: ${{ inputs.DOCKER_REGISTRY_NAME }}
+          artifactory_token: ${{ env.ARTIFACTORY_TOKEN }}
+          artifactory_username: ${{ env.ARTIFACTORY_USERNAME }}
+          gh-app-id: ${{ env.GHA_WORKFLOW_APP_ID }}
+          gh-app-private-key: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+          rally-api-key: ${{ env.RALLY_API_KEY }}
+          docker-build-flags: ${{ inputs.DOCKER_BUILD_FLAGS }}
+          use-cache: false
+      # Container Scan
+      - name: Initiate Container Scan (Snyk)
+        uses: cvs-health-source-code/secure-pipeline-scans/gha/container-scan/snyk@v2
+        if: ${{ env.CONTAINER_SCAN_TOOL == 'snyk' }}
+        with:
+          snyk-token: ${{ env.SNYK_TOKEN }}
+          snyk-token-pool: ${{ env.SNYK_TOKEN_POOL }}
+          snyk-org: ${{ inputs.SNYK_ORG }}
+          artifactory_token: ${{ env.JFROG_READER_TOKEN }}
+          artifactory_username: ${{ env.JFROG_READER_USERNAME }}
+          github-app-key: ${{ env.SECOPS_GH_APP_KEY_base64 }}
+          vuln_threshold: ${{ inputs.VULN_THRESHOLD_CONTAINER }}
+          dso-kafka-key: ${{ env.DSO_KAFKA_API_KEY_base64 }}
+          dso-kafka-secret: ${{ env.DSO_KAFKA_API_SECRET_base64 }}
+          dso-kafka-prod-key: ${{ env.KAFKA_PROD_API_KEY_base64 }}
+          dso-kafka-prod-secret: ${{ env.KAFKA_PROD_API_SECRET_base64 }}
+          gh-app-id: ${{ env.GHA_WORKFLOW_APP_ID }}
+          gh-app-private-key: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+          security_gate_team_name: ${{ inputs.SECURITY_GATE_TEAM_NAME }}
+          dockerfile: ${{ inputs.DOCKERFILE_PATH }}
+          restore-cache: false
+          devex-vault-secret-id: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+      # Docker Publish
+      - uses: cvs-health-source-code/secure-pipeline-scans/gha/docker-push@v2
+        if: ${{ inputs.DOCKER_PUBLISH && needs.setup.outputs.BRANCH_PUSH == 'true' }}
+        with:
+          artifactory_token: ${{ steps.save_artifactory_creds.outputs.ARTIFACTORY_TOKEN }}
+          artifactory_username: ${{ steps.save_artifactory_creds.outputs.ARTIFACTORY_USERNAME }}
+          use-latest-tag: ${{ inputs.USE_LATEST_TAG }}
+          devex-vault-secret-id: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+      # Capture Docker Image Information
+      - name: Set Docker Image Outputs
+        id: docker-outputs
+        run: |
+            IMAGE_VERSION="${{ steps.docker-build.outputs.imageid }}"
+            # Get image name from docker-build step
+            IMAGE_NAME="${{ inputs.ARTIFACT_NAME || github.event.repository.name }}"
+            # Construct image location/registry
+            IMAGE_LOCATION="${{ steps.docker-build.outputs.imagepath }}"
+  
+            # Set outputs
+            echo "imageid=${{ steps.docker-build.outputs.imageid }}" >> $GITHUB_OUTPUT
+            echo "digest=${{ steps.docker-publish.outputs.digest }}" >> $GITHUB_OUTPUT
+            echo "image-name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+            echo "image-version=$IMAGE_VERSION" >> $GITHUB_OUTPUT
+            echo "image-location=$IMAGE_LOCATION" >> $GITHUB_OUTPUT
+            echo "git-sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+      - name: Generate a GH auth token
+        id: generate_token
+        if: ${{ (inputs.PUSH_REGISTRY == 'dtr' || inputs.PUSH_REGISTRY == 'gar') && needs.setup.outputs.BRANCH_PUSH == 'true' }}
+        #uses: cvs-health-source-code/cvs-gha-github-app-token@v2.1.0
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b
+        with:
+          app-id: ${{ env.GHA_WORKFLOW_APP_ID }}
+          private-key: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+          owner: cvs-health-source-code
+      - name: Docker Publish additional registry
+        if: ${{ (inputs.PUSH_REGISTRY == 'dtr' || inputs.PUSH_REGISTRY == 'gar') && needs.setup.outputs.BRANCH_PUSH == 'true' }}
+        uses: cvs-health-source-code/gha_workflow_actions/actions/publish_registry@latest
+        with:
+          gh-token: ${{ steps.generate_token.outputs.token }}
+          app-repository: ${{ github.repository }}
+          registry-user: ${{ env.DTR_USER }}
+          registry-token: ${{ env.DTR_TOKEN }}
+          app-version: ${{ inputs.IMAGE_TAG_VERSION }}
+          type: ${{ inputs.PUSH_REGISTRY }}
+
+  sbom:
+    name: "Generate SBOM"
+    runs-on: ${{ inputs.RUNS_ON }}
+    needs: [setup, build-scan-publish]
+    if: | 
+      always() &&
+      needs.build-scan-publish.result == 'success' &&
+      inputs.DOCKER_PUBLISH == true && needs.setup.outputs.BRANCH_PUSH == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Prep Step
+        id: prep_step
+        uses: cvs-health-source-code/gha_workflow_actions/actions/prep_step@latest
+        with:
+          APP_OWNER: "cvs-health-source-code"
+          DEVEX_VAULT_SECRET_ID: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+          VAULT_ROLE_ID: ${{ inputs.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+          VAULT_ENGINE_NAME: ${{ inputs.VAULT_ENGINE_NAME }}
+          VAULT_ADDRESS: ${{ inputs.VAULT_ADDRESS }}
+          VAULT_PATH: ${{ inputs.VAULT_PATH }}
+          VAULT_BASE64_DECODE: ${{ inputs.VAULT_BASE64_DECODE }}
+      - name: Generate SBOM
+        uses: cvs-health-source-code/secure-pipeline-scans/gha/attest@v2
+        with:
+          artifactory_token: ${{ env.ARTIFACTORY_DEVSECOPS_ATTEST_TOKEN }}
+          cosign_key: ${{ env.COSIGN_PUBLIC_KEY_base64}}
+          dso-kafka-key: ${{ env.DSO_KAFKA_API_KEY_base64 }}
+          dso-kafka-secret: ${{ env.DSO_KAFKA_API_SECRET_base64 }}
+          dso-kafka-prod-key: ${{ env.KAFKA_PROD_API_KEY_base64 }}
+          dso-kafka-prod-secret: ${{ env.KAFKA_PROD_API_SECRET_base64 }}
+          tool: "all"
+
+  cd-values-update:
+    name: "Update CD Values"
+    runs-on: ${{ inputs.RUNS_ON }}
+    needs: [setup, build-scan-publish]
+    env:
+      RELEASE_TAG: ${{ needs.build-scan-publish.outputs.RELEASE_TAG }}
+    if: | 
+      always() &&
+      !contains(needs.setup.result, 'failure') &&
+      !contains(needs.setup.result, 'skipped') &&
+      !contains(needs.setup.result, 'cancelled') &&
+      !contains(needs.build-scan-publish.result, 'failure') &&
+      !contains(needs.build-scan-publish.result, 'skipped') &&
+      !contains(needs.build-scan-publish.result, 'cancelled') &&
+      inputs.CD_DEPLOY_FILE != 'NA' && needs.setup.outputs.BRANCH_PUSH == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Prep Step
+        id: prep_step
+        uses: cvs-health-source-code/gha_workflow_actions/actions/prep_step@latest
+        with:
+          APP_OWNER: "cvs-health-source-code"
+          DEVEX_VAULT_SECRET_ID: ${{ secrets.DEVEX_VAULT_SECRET_ID }}
+          VAULT_ROLE_ID: ${{ inputs.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+          VAULT_ENGINE_NAME: ${{ inputs.VAULT_ENGINE_NAME }}
+          VAULT_ADDRESS: ${{ inputs.VAULT_ADDRESS }}
+          VAULT_PATH: ${{ inputs.VAULT_PATH }}
+          VAULT_BASE64_DECODE: ${{ inputs.VAULT_BASE64_DECODE }}
+      - name: Release setup
+        run:
+          echo $RELEASE_TAG > release.version
+      - name: "Update Harness Values"
+        uses: cvs-health-source-code/gha_workflow_actions/actions/update_deployment_config@latest
+        with:
+          build_type: "gradle"
+          CD_DEPLOY_FILE: ${{ inputs.CD_DEPLOY_FILE }}
+          CD_IMAGE_PR_REFRESH_TIMEOUT: ${{ inputs.CD_IMAGE_PR_REFRESH_TIMEOUT }}
+          CD_IMAGE_PR_SLEEP_TIMEOUT: ${{ inputs.CD_IMAGE_PR_SLEEP_TIMEOUT }}
+          SKIP_SEMANTIC: ${{ toJSON(inputs.SKIP_SEMANTIC) }}
+          HOTFIX_RELEASE_BRANCH: ${{ inputs.HOTFIX_RELEASE_BRANCH }}
+          HOTFIX_RELEASE: ${{ inputs.HOTFIX_RELEASE }}
+          IMAGE_TAG_VERSION: ${{ inputs.IMAGE_TAG_VERSION }}
+          APP_ID: ${{ env.GHA_WORKFLOW_APP_ID }}
+          PRIVATE_KEY: ${{ env.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+          DEPLOY_CONFIG_ORG_NAME: ${{ inputs.DEPLOY_CONFIG_ORG_NAME }}
+
+  send-telemetry:
+    name: "Send Telemetry"
+    runs-on: ${{ inputs.RUNS_ON }}
+    needs: [setup, build-scan-publish, sbom, cd-values-update]
+    if: always()
+    steps:
+      - name: Send Telemetry
+        uses: cvs-health-source-code/gha_workflow_actions/actions/send_telemetry@latest
+        with:
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
