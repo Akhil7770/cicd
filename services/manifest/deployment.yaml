@@ -1,0 +1,189 @@
+---
+# Source: gitops-microservices-helm-template/templates/deploy-template/deployment.yaml
+metadata:
+  name: cost-estimator-calc-service-ddedb69eb7b6586760b63ee461eade2a62083d07
+  namespace: hcb-edmlprvdraaece-pdev
+  annotations:
+    reloader.stakater.com/match: "true"
+    user.defined.application: "true"
+    cost-estimator-calc-service-min-replicas: "1"
+  labels:
+    app: cost-estimator-calc-service
+    environment: hcb-edmlprvdraaece-pdev
+    stage: hcb-edmlprvdraaece-pdev
+    part-of: cost-estimator-calc-service
+    version: ddedb69eb7b6586760b63ee461eade2a62083d07
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    metadata:
+      annotations:
+        proxy.istio.io/config: '{ "holdApplicationUntilProxyStarts": true }'
+        sidecar.istio.io/rewriteAppHTTPProbers: 'true'
+        cluster-autoscaler.kubernetes.io/safe-to-evict: 'true'
+        name: cost-estimator-calc-service
+      labels:
+        app: cost-estimator-calc-service
+        environment: hcb-edmlprvdraaece-pdev
+        stage: hcb-edmlprvdraaece-pdev
+        part-of: cost-estimator-calc-service
+        version:  ddedb69eb7b6586760b63ee461eade2a62083d07
+    spec:
+      dnsPolicy: ClusterFirst
+      #------start logic for custom node affinity and tolerations to deploy services on gpu enabled nodepools
+      imagePullSecrets: 
+      - name: "artifactory-registry"
+      terminationGracePeriodSeconds: 30
+      volumes:
+      serviceAccount: hcb-cet-ksa
+      serviceAccount: cost-estimator-calc-service
+      containers:
+      - name: cost-estimator-calc-service-deploy
+        image: cvsh.jfrog.io/cvsdigital-docker/ghemu/cvs-health-source-code/cost-estimator-calc-service/cost-estimator-calc-service:ddedb69eb7b6586760b63ee461eade2a62083d07
+        livenessProbe:
+          failureThreshold: 5
+          timeoutSeconds: 3
+          periodSeconds: 5
+          initialDelaySeconds: 30
+          httpGet:
+            path: /costestimator/v1/health
+            port: 8000
+            httpHeaders:
+            - name: x-b3-sampled
+              value: '0'
+          
+          
+        readinessProbe:
+          failureThreshold: 5
+          timeoutSeconds: 3
+          periodSeconds: 5
+          initialDelaySeconds: 30
+          httpGet:
+            path: /costestimator/v1/health
+            port: 8000
+            httpHeaders:
+            - name: x-b3-sampled
+              value: '0'
+          
+          
+        startupProbe:
+          failureThreshold: 40
+          timeoutSeconds: 3
+          periodSeconds: 100
+          initialDelaySeconds: 300
+          httpGet:
+            path: /costestimator/v1/health
+            port: 8000
+            httpHeaders:
+            - name: x-b3-sampled
+              value: '0'
+          
+          
+        imagePullPolicy: IfNotPresent
+        name: cost-estimator-calc-service
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            memory: 350Mi
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+          allowPrivilegeEscalation: false
+        
+        ports:
+        - containerPort: 8000
+        env:
+        - name: ENVIRONMENT
+          value: "pdev"
+        - name: SPANNER_PROJECT_ID
+          value: "edp-pdev-cet"
+        - name: ENV_NAME
+          value: "PDEV"
+        - name: SPANNER_INSTANCE_ID
+          value: "anbc-cet"
+        - name: SPANNER_DATABASE_ID
+          value: "cost-estimator-secure"
+        - name: BENEFITS_URL
+          value: "https://qaapi01.int.aetna.com/hcb/qapath2/hcb/v4/internal/servicesbenefits/details/retrieve"
+        - name: ACCUMULATOR_URL
+          value: "https://qaapi01.int.aetna.com/hcb/qapath2/internal/v5/membershipsaccumulators"
+        - name: TOKEN_URL
+          value: "https://qaapi01.int.aetna.com/healthcare/qapath2/v5/privapp/auth/oauth2/token"
+        - name: CLIENT_ID
+          value: "5ed6497d44e6a39631f45f7a9971decf"
+        - name: CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: anbc-hcb-cet-pdev
+              key: CLIENT_SECRET
+        - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+          value: "https://otelc-gmp-collector-grpc.hcb-pdev.aig.aetna.com"
+        - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+          value: "https://otelc-traces-collector-grpc.hcb-pdev.aig.aetna.com"
+        - name: OTEL_METRICS_EXPORTER
+          value: "otlp"
+        - name: OTEL_TRACES_EXPORTER
+          value: "otlp"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "grpc"
+        - name: OTEL_LOGS_EXPORTER
+          value: "none"
+        - name: OTEL_TRACES_SAMPLER
+          value: "always_on"
+        - name: OTEL_PROPAGATORS
+          value: "tracecontext,baggage"
+        - name: OTEL_SERVICE_NAME
+          value: "APM0016344"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.name=APM0016344,service.version=1.0.0"
+        - name: OTEL_PYTHON_DISABLED_INSTRUMENTATIONS
+          value: "aws-lambda"
+        - name: OTEL_INSTRUMENTATION_HTTP_ENABLED
+          value: "true"
+        - name: OTEL_INSTRUMENTATION_FASTAPI_ENABLED
+          value: "true"
+        - name: OTEL_INSTRUMENTATION_HTTPX_ENABLED
+          value: "true"
+        - name: OTEL_INSTRUMENTATION_REQUESTS_ENABLED
+          value: "true"
+        - name: OTEL_INSTRUMENTATION_AIOHTTP_CLIENT_ENABLED
+          value: "true"
+        - name: OTEL_INSTRUMENTATION_HTTP_SERVER_ENABLED
+          value: "true"
+        
+        - name: namespace
+          value: hcb-edmlprvdraaece-pdev
+        - name: app-name
+          value: cost-estimator-calc-service
+        - name: app-image-version
+          value: ddedb69eb7b6586760b63ee461eade2a62083d07
+        envFrom:
+        - secretRef: 
+            name: anbc-hcb-cet-pdev
+            optional: false
+        
+        volumeMounts:
+      securityContext: {}
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      initContainers:
+
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app:  cost-estimator-calc-service
+      environment: hcb-edmlprvdraaece-pdev
+      stage: hcb-edmlprvdraaece-pdev
+      part-of:  cost-estimator-calc-service
+      version: ddedb69eb7b6586760b63ee461eade2a62083d07
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  progressDeadlineSeconds: 120
