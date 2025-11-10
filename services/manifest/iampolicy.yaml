@@ -1,0 +1,19 @@
+---
+# Source: gitops-microservices-helm-template/templates/deploy-template/iampolicy.yaml
+apiVersion: iam.cnrm.cloud.google.com/v1beta1
+kind: IAMPartialPolicy
+metadata:
+  namespace: hcb-edmlprvdraaece-pdev
+  name: iampolicy-binding-cost-estimator-calc-service
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true
+    argocd.argoproj.io/sync-wave: '1'
+spec:
+    resourceRef:
+      apiVersion: iam.cnrm.cloud.google.com/v1beta1
+      kind: IAMServiceAccount
+      external: projects/edp-pdev-hcb-gke/serviceAccounts/hcb-edmlprvdraaece@edp-preprod-serviceops.iam.gserviceaccount.com
+    bindings:
+      - role: roles/iam.workloadIdentityUser
+        members:
+          - member: serviceAccount:edp-pdev-hcb-gke.svc.id.goog[hcb-edmlprvdraaece-pdev/cost-estimator-calc-service]
