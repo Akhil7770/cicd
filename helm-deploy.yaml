@@ -1,0 +1,864 @@
+name: App Deployment
+on:
+  workflow_call:
+   inputs:
+    app-name:
+        description: "Application Name. Example: DevSecOpsAngular"
+        required: true
+        type: string
+    environment:
+        description: "Environment we are deploying to. Example: dev"
+        required: true
+        type: string
+    environment-type:
+        description: "Environment type that teams are deploying to:Allowed values are prod and nonprod"
+        default: prod
+        required: false
+        type: string
+    helm-template-repo:
+        description: "Helm chart to bake. Example: microservices-helm-template"
+        required: true
+        type: string
+    helm-file-version:
+        description: "Helm chart to bake. Example: microservices-helm-template"
+        required: true
+        type: string
+    helm-template-branch:
+        description: "Helm Template branch"
+        required: true
+        type: string
+    deploy-config-repo:
+        description: "Github deployment config repo name"
+        default: ${{ github.event.repository.name }}
+        required: false 
+        type: string
+    deploy-config-org:
+        description: "Github deployment config repo org name"
+        default: ${{ github.repository_owner }}
+        required: false
+        type: string
+    canary-weight:
+        description: "Canary Value. Example: 0 to 99"
+        default: "0"
+        required: false
+        type: string
+    runs-on-group:
+        description: "Name of the Github Runner Set Group to run the workflow on. Example: cvs-linux-self-hosted"
+        default: cvs-linux-self-hosted
+        required: false
+        type: string
+    runs-on:
+      description: "Name of the Github Runner labels to run the workflow on. Example: self-hosted"
+      default: self-hosted
+      required: false
+      type: string
+    adjusted-tenant-path:
+        description: "Primarily for monorepo support. Example deploy-config path: deploy-configs/{{ adjusted-tenant-path }}/*"
+        required: false
+        type: string
+    docker-image-tag:
+        description: "Docker Image Tag. Example: 1.0.0.  This only applies when using the adjusted-tenant-path."
+        required: false
+        type: string
+    change-domain:
+        description: |
+          Provide the change domain from the following.
+          Enterprise,Health Care Business(HCB),Lower Level Environment(LLE),Pharmacy Services(PS),Pharmacy & Cosumer Wellness(PCW),Health Care Delivery(HCD)
+        default: "Health Care Delivery(HCD)"
+        required: false
+        type: string
+    change-impacted-website:
+        description: |
+          Select change website from list provided. 
+          CVS.COM,CAREMARK.COM,AETNA.COM,SPECIALTY,CARE.CVS.COM,myactivehealth.com
+        default: "CVS.COM"
+        required: false
+        type: string
+    rfc-short-desc:
+        description: "Provide brief description of the change"
+        type: string
+    change-description:
+        description: "Please provide details regarding the change and list any applications that may be impacted as a result"
+        type: string
+    lob:
+      description: "Line of business of application"
+      type: string
+    rfc-window-length:
+      type: string
+      description: "Time change window is open in hours, default to 2 hours"
+      default: "2"
+    manual-rfc:
+      description: "Manual RFC input for change process"
+      required: false
+      type: boolean
+      default: false
+    rfc-number:
+      description: "RFC number for manual change process"
+      required: false
+      type: string
+      default: ''
+    rfc-app-ci:
+      description: "CMDB CI for the change ticket"
+      required: false
+      type: string
+      default: ''
+
+jobs:
+
+  initialize-and-deploy:
+    runs-on: ${{ inputs.runs-on }}
+    #  group: cvs-linux-self-hosted
+    environment: ${{ inputs.environment }}
+    env:
+      ENV_NAME: ${{ inputs.environment }}
+      APP_NAME: ${{ inputs.app-name }}
+      HELM_TEMPLATE_REPO: ${{ inputs.helm-template-repo }}
+      HELM_TEMPLATE_BRANCH: ${{ inputs.helm-template-branch }}
+      HELM_FILE_VERSION: ${{ inputs.helm-file-version }}
+      CANARY_WEIGHT_INPUT:  ${{ inputs.canary-weight }}
+      CHANGE_DOMAIN: ${{ inputs.change-domain }}
+      CHANGE_IMPACTED_WEBSITE: ${{ inputs.change-impacted-website }}
+      RFC_SHORT_DESC: ${{ inputs.rfc-short-desc }}
+      CHANGE_DESCRIPTION: ${{ inputs.change-description }}
+      PROJECT_LOB: ${{ inputs.lob }}
+    outputs:
+      ARGOCD_USER: ${{ steps.argocd-values.outputs.ARGOCD_USER }}
+      ARGOCD_URL: ${{ steps.argocd-values.outputs.ARGOCD_URL }}
+      ARGOCD_PASSWORD_NAME: ${{ steps.set-argocd-vars.outputs.ARGOCD_PASSWORD_NAME }}
+      DEPLOY_VERSION: ${{ steps.set-outputs.outputs.DEPLOY_VERSION }}
+      LIVE_VERSION: ${{ steps.set-outputs.outputs.LIVE_VERSION }}
+      MANIFESTS_REPO_NAME: ${{ steps.set-outputs.outputs.MANIFESTS_REPO_NAME }}
+      GIT_TAG: ${{ steps.set-outputs.outputs.GIT_TAG }}
+      MANIFESTS_GIT_PATH: ${{ steps.set-outputs.outputs.MANIFESTS_GIT_PATH }}
+      CANARY_WEIGHTAGE: ${{ steps.set-outputs.outputs.CANARY_WEIGHTAGE }}
+      EXECUTE_AUTOMATION: ${{ steps.set-env-vars.outputs.EXECUTE_AUTOMATION }}
+      POST_DEPLOY_VALIDATION: ${{ steps.set-env-vars.outputs.POST_DEPLOY_VALIDATION }}
+      TARGET_ENV_TYPE: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE }}
+      DEPLOY_RESULT: ${{ steps.set-outputs.outputs.DEPLOY_RESULT }}
+      NEXT_ENV: ${{ steps.load-env.outputs.NEXT_ENV }}
+      CD_CONFIG_FILE: ${{ steps.load-env.outputs.CD_CONFIG_FILE }}
+      CD_ENV_CONFIG_FILE: ${{ steps.load-env.outputs.CD_ENV_CONFIG_FILE }}
+      CD_PDB_ALLOW_LIST_FILE: ${{ steps.load-env.outputs.CD_PDB_ALLOW_LIST_FILE }}
+      SNOW_RFC_IMPLEMENT_TIME: ${{ steps.configure-rfc.outputs.SNOW_RFC_IMPLEMENT_TIME }}
+      SNOW_CLOSE_URL: ${{ steps.configure-rfc.outputs.SNOW_CLOSE_URL }}
+      SNOW_CHANGE_APPROVER: ${{ steps.configure-rfc.outputs.SNOW_CHANGE_APPROVER }}
+      SNOW_CHANGE_TEMPLATE: ${{ steps.configure-rfc.outputs.SNOW_CHANGE_TEMPLATE }}
+      SNOW_CHANGE_ASSIGNED_USER: ${{ steps.configure-rfc.outputs.SNOW_CHANGE_ASSIGNED_USER }}
+      SNOW_CHANGE_DOMAIN: ${{ steps.configure-rfc.outputs.SNOW_CHANGE_DOMAIN }}
+      SNOW_IMPACTED_CI: ${{ steps.configure-rfc.outputs.SNOW_IMPACTED_CI }}
+      SLACK_URL: ${{ steps.configure-rfc.outputs.SLACK_URL }}
+      SNOW_RFC_START_DATE: ${{ steps.configure-rfc.outputs.SNOW_RFC_START_DATE }}
+      SNOW_RFC_END_DATE: ${{ steps.configure-rfc.outputs.SNOW_RFC_END_DATE }}
+      CHG_ID: ${{ steps.rfc-create.outputs.CHG_ID }}
+
+
+
+    steps:
+      # Generate Github token cvs-health-source-code/gh-app-installation-token-action@v1
+      - name: Generate Github token
+        id: generate_token
+        uses: cvs-health-source-code/gh-app-installation-token-action@v1
+        with:
+          token: ${{ secrets.GHA_DEPLOY_USER }}
+
+      # Checkout actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Setup Tenant Configuration cvs-health-source-code/gitops-cd-actions/set-tenant-config@v1
+      - name: Setup Tenant Configuration
+        if: ${{ inputs.adjusted-tenant-path != '' && inputs.docker-image-tag != '' }}
+        uses: cvs-health-source-code/gitops-cd-actions/set-tenant-config@v1
+        with:
+          adjusted-tenant-path: ${{ inputs.adjusted-tenant-path }}
+          environment: ${{ inputs.environment }}
+          docker-image-tag: ${{ inputs.docker-image-tag }}
+          helm-file-version: ${{ inputs.helm-file-version }}
+      - name: LOAD ENV
+        shell: bash
+        id: load-env
+        run: |
+          echo "${{ vars.CLUSTER_NAME }}"
+          CD_CONFIG_FILE="${GITHUB_API_URL_PREFIX}/${CD_CONFIG_REPO}/contents/${CD_CONFIG_FILE}?ref=${CD_CONFIG_REPO_BRANCH}"
+          CD_ENV_CONFIG_FILE="${GITHUB_API_URL_PREFIX}/${CD_CONFIG_REPO}/contents/${CD_ENV_CONFIG_FILE}?ref=${CD_CONFIG_REPO_BRANCH}"
+          CD_PDB_ALLOW_LIST_FILE="${GITHUB_API_URL_PREFIX}/${CD_CONFIG_REPO}/contents/${PDB_CHECK_CONFIG_FILE}?ref=${CD_CONFIG_REPO_BRANCH}"
+          echo "CD_CONFIG_FILE=$CD_CONFIG_FILE" >> $GITHUB_OUTPUT
+          echo "CD_ENV_CONFIG_FILE=$CD_ENV_CONFIG_FILE" >> $GITHUB_OUTPUT
+          echo "CD_PDB_ALLOW_LIST_FILE=$CD_PDB_ALLOW_LIST_FILE" >> $GITHUB_OUTPUT
+          echo "NEXT_ENV=${{ vars.NEXT_ENV }}" >> $GITHUB_OUTPUT
+          echo "NEXT_ENV:${NEXT_ENV}"
+          echo "CD_CONFIG_FILE:${CD_CONFIG_FILE}"
+          echo "CD_ENV_CONFIG_FILE:${CD_ENV_CONFIG_FILE}"
+          echo "CD_PDB_ALLOW_LIST_FILE:${CD_PDB_ALLOW_LIST_FILE}"
+      # Set ArgoCD ENV Vars cvs-health-source-code/gitops-cd-actions/set-argocd-vars@v1
+      - name: Set ArgoCD ENV Vars
+        id: set-argocd-vars
+        uses: cvs-health-source-code/gitops-cd-actions/set-argocd-vars@v1
+        with:
+          cluster-name: ${{ vars.CLUSTER_NAME }}
+          cd-config-file: ${{ steps.load-env.outputs.CD_ENV_CONFIG_FILE }}
+          gh-token: ${{ steps.generate_token.outputs.installation-token }}
+          env-target-type: ${{ inputs.ENV_NAME }}
+
+      # Set ArgoCD and Other Variable Values
+      - name: Set ArgoCD and Other Variable Values
+        id: argocd-values
+        shell: bash
+        run: |
+            echo "USER NAME ${{vars[steps.set-argocd-vars.outputs.ARGOCD_USER_NAME]}}"
+            echo "URL NAME ${{steps.set-argocd-vars.outputs.ARGOCD_URL_NAME}}"
+            ARGOCD_USER="${{ vars[steps.set-argocd-vars.outputs.ARGOCD_USER_NAME] }}"
+            DERIVED_ARGO_URL="${{ steps.set-argocd-vars.outputs.ARGO_URL }}"
+            echo "ARGOCD_USER=$ARGOCD_USER"  >> $GITHUB_OUTPUT
+            ARGOCD_URL="${{ vars[env.ARGOCD_URL_NAME] }}"
+            echo "ARGOCD_USER:${ARGOCD_USER}"
+            echo "ARGOCD_URL:${ARGOCD_URL}"
+            if [[ ! -z $DERIVED_ARGO_URL && $DERIVED_ARGO_URL != "NA" && $DERIVED_ARGO_URL != "null" ]];then
+              export ARGOCD_URL="${DERIVED_ARGO_URL}"
+            fi
+            echo "ARGOCD_USER:${ARGOCD_USER}"
+            echo "ARGOCD_URL:${ARGOCD_URL}"
+            CD_CONFIG_FILE="${{ steps.load-env.outputs.CD_CONFIG_FILE }}"
+            CD_ENV_CONFIG_FILE="${{ steps.load-env.outputs.CD_ENV_CONFIG_FILE }}"
+            CD_PDB_ALLOW_LIST_FILE="${{ steps.load-env.outputs.CD_PDB_ALLOW_LIST_FILE }}"
+            echo "ARGOCD_URL=$ARGOCD_URL" >> $GITHUB_OUTPUT
+            echo "CD_CONFIG_FILE=CD_CONFIG_FILE" >> $GITHUB_OUTPUT
+            echo "CD_ENV_CONFIG_FILE=$CD_ENV_CONFIG_FILE" >> $GITHUB_OUTPUT
+            echo "CD_PDB_ALLOW_LIST_FILE=$CD_PDB_ALLOW_LIST_FILE" >> $GITHUB_OUTPUT
+
+
+      #ArgoCD Input Validations cvs-health-source-code/gitops-cd-actions/argocd-validations@v1
+      - name: ArgoCD Input Validations
+        id: argocd-validations
+        uses: cvs-health-source-code/gitops-cd-actions/argocd-validations@v1
+        with:
+          argocd-token: ${{ secrets[steps.set-argocd-vars.outputs.ARGOCD_PASSWORD_NAME] }}
+          argocd-user: ${{ steps.argocd-values.outputs.ARGOCD_USER }}
+          argocd-url: ${{ steps.argocd-values.outputs.ARGOCD_URL }}
+
+      # Set ENV Vars cvs-health-source-code/gitops-cd-actions/set-env-vars@v1
+      - name: Set ENV Vars
+        id: set-env-vars
+        uses: cvs-health-source-code/gitops-cd-actions/set-env-vars@v1
+        with:
+          cluster-name: ${{ vars.CLUSTER_NAME }}
+          cluster-type: ${{ vars.CLUSTER_TYPE }}
+          manifest-repo-name: ${{ vars.MANIFESTS_REPO_NAME }}
+
+      # Input Validations cvs-health-source-code/gitops-cd-actions/input-validations@v1
+      - name: Input Validations
+        id: input-validations
+        uses: cvs-health-source-code/gitops-cd-actions/input-validations@v1
+
+      # Fetch Setup Repo for Running Helm Commands cvs-health-source-code/gitops-cd-actions/fetch-setup-repos@v1
+      - name: Fetch Setup Repo for Running Helm Commands
+        id: fetch-setup-repos
+        uses: cvs-health-source-code/gitops-cd-actions/fetch-setup-repos@v1
+        with:
+          github-token: ${{ steps.generate_token.outputs.installation-token }}
+
+      # Get Live Version for current manifests cvs-health-source-code/gitops-cd-actions/get-live-version@v1
+      - name: Get Live Version for current manifests
+        id: get-live-version
+        uses: cvs-health-source-code/gitops-cd-actions/get-live-version@v1
+
+      # Helm Generate Manifests cvs-health-source-code/gitops-cd-actions/helm-generate-manifests@v1
+      - name: Helm Generate Manifests
+        id: helm-generate-manifests
+        uses: cvs-health-source-code/gitops-cd-actions/helm-generate-manifests@v1
+        with:
+          adjusted-tenant-path: ${{ inputs.adjusted-tenant-path }}
+
+      #  Process Deploy Manifests cvs-health-source-code/gitops-cd-actions/process-deploy-manifests@v1
+      - name: Process Deploy Manifests
+        id: process-deploy-manifests
+        uses: cvs-health-source-code/gitops-cd-actions/process-deploy-manifests@v1
+
+      # Configure RFC cvs-health-source-code/gitops-cd-actions/rfc-config@v1
+      - name: Configure RFC
+        id: configure-rfc
+        if: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE == 'prod' }}
+        uses: cvs-health-source-code/gitops-cd-actions/rfc-config@v1
+        with:
+          project-lob: ${{ inputs.lob }}
+          change-domain: ${{ inputs.change-domain }}
+          change-impacted-website: ${{ inputs.change-impacted-website }}
+          change-hours-offset: ${{ inputs.rfc-window-length }}
+          cd-config-file: ${{ steps.load-env.outputs.CD_CONFIG_FILE }}
+          gh-token: ${{ steps.generate_token.outputs.installation-token }}
+
+      # Check for existing approval state to potentially skip manual approval
+      - name: Check Existing Approval State
+        id: check-existing-approval
+        if: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE == 'prod' }}
+        uses: cvs-health-source-code/gitops-cd-actions/check-approval-state@v1
+        with:
+          image-tag: ${{ env.DEPLOY_VERSION }}
+          environment: ${{ inputs.environment }}
+          github-token: ${{ steps.generate_token.outputs.installation-token }}
+
+      - name: Prep for prod deployment
+        id: prep-prod-deployment
+        if: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE == 'prod' }}
+        env:
+          LIVE_VERSION: "${{ env.LIVE_VERSION }}"
+          DEPLOY_VERSION: "${{ env.DEPLOY_VERSION }}"
+          CANARY_WEIGHT: "${{ env.CANARY_WEIGHT_INPUT }}"
+        shell: bash
+        run: |
+          DEPLOYMENT_TYPE="Rolling"
+          PERFORM_CLEANUP="Yes"
+          if [[ ! -z "${CANARY_WEIGHT_INPUT}" && "${CANARY_WEIGHT_INPUT}" != "0" ]];then
+            DEPLOYMENT_TYPE="canary"
+            PERFORM_CLEANUP="No"
+            PRIMARY_WEIGHT=$((100-${CANARY_WEIGHT_INPUT%.*}))
+             export DESC_4="<B>TRAFFIC_ROUTING:</B> ${PRIMARY_WEIGHT}% traffic will be routed to ${LIVE_VERSION}, ${CANARY_WEIGHT_INPUT}% traffic to be routed to ${DEPLOY_VERSION}<BR>"
+           else
+             export DESC_4="<B>TRAFFIC_ROUTING:</B> 100% traffic will be routed to ${DEPLOY_VERSION}<BR>"
+          fi
+          export CHANGE_DOMAIN="${{ inputs.change-domain }}"
+          export CHANGE_IMPACTED_WEBSITE="${{ inputs.change-impacted-website }}"
+          export CHANGE_TITLE="Production ${DEPLOYMENT_TYPE} deployment for  ${APP_NAME} version ${DEPLOY_VERSION} to ${ENV_NAME}"
+          export DESC_1="<B>${APP_NAME}</B> Production ${DEPLOYMENT_TYPE} deployment to environment <B>${ENV_NAME}</B><BR><BR>"
+          export DESC_2="<B>LIVE_VERSION: ${LIVE_VERSION}</B> - current image running in ${ENV_NAME} <BR><B>DEPLOY_VERSION: ${DEPLOY_VERSION}</B> - to be deployed into ${ENV_NAME}<BR>"
+          export DESC_3="<B>PERFORM_CLEANUP: ${PERFORM_CLEANUP}</B> - if yes, after new image is deployed, ${LIVE_VERSION} will be deleted<BR>"
+          export DESC_5="<B>GITHUB_APP_REPO: ${APP_REPO} </B>- Deployment status is posted to this repo .<BR><BR><B>DEPLOYMENT_TRIGGERED_BY:${{ github.actor }}</B> <BR><BR>"
+          export DESC_6="<B>APPROVAL_GROUP:</B> ${{ steps.configure-rfc.outputs.SNOW_CHANGE_APPROVER }}<BR><BR>"
+          export DESC_7="<center><B>:bangbang: ATTEN :bangbang: </center> <BR><BR></B>To approve :white_check_mark: the deployment, comment:approve <input> e.g., approve v1.2.3 and close the issue.<BR>"
+          export DESC_8="To reject :x: the deployment comment:reject <input> e.g., reject v1.2.3 and close the issue.<BR>CHANGE_DOMAIN:${CHANGE_DOMAIN}<BR>CHANGE_IMPACTED_WEBSITE:${CHANGE_IMPACTED_WEBSITE}"
+          export CHANGE_DESCRIPTION="${DESC_1}${DESC_2}${DESC_3}${DESC_4}${DESC_5}${DESC_6}${DESC_7}${DESC_8}"
+
+          echo "CHANGE_TITLE=${CHANGE_TITLE}" >> $GITHUB_OUTPUT
+          echo "CHANGE_DESCRIPTION=${CHANGE_DESCRIPTION}" >> $GITHUB_OUTPUT
+          echo "CHANGE_TITLE:${CHANGE_TITLE}"
+          echo "CHANGE_DESCRIPTION:${CHANGE_DESCRIPTION}"
+      - name: Generate a token Auth to github
+        id: generate_approval_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GHA_WORKFLOW_APP_ID }}
+          private-key: ${{ secrets.GHA_WORKFLOW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      # Prod deployment approval cvs-health-source-code/gha_workflow_actions/actions/approval_workflow@latest
+      - name: Prod deployment approval
+        id: admin-approval
+        if: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE == 'prod' && steps.check-existing-approval.outputs.skip_manual_approval != 'true' }}
+        uses: cvs-health-source-code/gha_workflow_actions/actions/approval_workflow@latest
+        with:
+          approver-team: ${{ steps.configure-rfc.outputs.SNOW_CHANGE_APPROVER }}
+          issue-title: ${{ steps.prep-prod-deployment.outputs.CHANGE_TITLE }}
+          issue-body: ${{ steps.prep-prod-deployment.outputs.CHANGE_DESCRIPTION }}
+          github-token:  ${{ steps.generate_approval_token.outputs.token }}
+          org: ${{ github.repository_owner }}
+
+      # Set final approver details (either from new approval or existing approval state)
+      - name: Set Final Approver Details
+        id: set-approver
+        if: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE == 'prod' }}
+        shell: bash
+        run: |
+          if [ "${{ steps.check-existing-approval.outputs.skip_manual_approval }}" == "true" ]; then
+            echo "FINAL_APPROVER_EMAIL=${{ steps.check-existing-approval.outputs.original_approver_email }}" >> $GITHUB_OUTPUT
+            echo "FINAL_APPROVER_NAME=${{ steps.check-existing-approval.outputs.original_approver_name }}" >> $GITHUB_OUTPUT
+            echo "APPROVAL_SOURCE=inherited" >> $GITHUB_OUTPUT
+            echo "ORIGINAL_RUN_ID=${{ steps.check-existing-approval.outputs.original_run_id }}" >> $GITHUB_OUTPUT
+            echo "ORIGINAL_ENVIRONMENT=${{ steps.check-existing-approval.outputs.original_environment }}" >> $GITHUB_OUTPUT
+            echo "✅ Using inherited approval from previous pipeline"
+            echo "   Approver: ${{ steps.check-existing-approval.outputs.original_approver_name }}"
+            echo "   Original Run: ${{ steps.check-existing-approval.outputs.original_run_id }}"
+          elif [[ "${{ steps.check-existing-approval.outputs.skip_manual_approval }}" != "true" && "${{ steps.admin-approval.outputs.approvedby }}" != "rejected" && "${{ steps.admin-approval.outputs.approvedby }}" == *_cvsh ]]; then
+            echo "FINAL_APPROVER_EMAIL=${{ steps.admin-approval.outputs.approvedby }}" >> $GITHUB_OUTPUT
+            echo "FINAL_APPROVER_NAME=${{ steps.admin-approval.outputs.approvedby }}" >> $GITHUB_OUTPUT
+            echo "APPROVAL_SOURCE=manual" >> $GITHUB_OUTPUT
+            echo "ORIGINAL_RUN_ID=${{ github.run_id }}" >> $GITHUB_OUTPUT
+            echo "ORIGINAL_ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+            echo "✅ Using manual approval from current pipeline"
+            echo "   Approver: ${{ steps.admin-approval.outputs.approvedby }}"
+          else
+            echo "No approval for prod deployments received" 
+            echo "${{ steps.admin-approval.outputs.approvedby }}"
+          fi
+
+
+      # Store approval state for NEXT_ENV promotion (for both manual and inherited approvals)
+      - name: Store Approval State for NEXT_ENV
+        id: store-approval-state
+        if: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE == 'prod' && (steps.admin-approval.outputs.approved == 'true' || steps.check-existing-approval.outputs.skip_manual_approval == 'true') && steps.load-env.outputs.NEXT_ENV != '' }}
+        uses: cvs-health-source-code/gitops-cd-actions/store-approval-state@v1
+        with:
+          image-tag: ${{ env.DEPLOY_VERSION }}
+          next-environment: ${{ steps.load-env.outputs.NEXT_ENV }}
+          approver-email: ${{ steps.set-approver.outputs.FINAL_APPROVER_EMAIL }}
+          approver-name: ${{ steps.set-approver.outputs.FINAL_APPROVER_NAME }}
+          current-environment: ${{ inputs.environment }}
+          github-token: ${{ steps.generate_approval_token.outputs.token }}
+
+      - name: Validate Manual RFC
+        id: manual-rfc
+        if: ${{ inputs.manual-rfc }}
+        uses: cvs-health-source-code/gitops-cd-actions/manual_rfc_validation@v1
+        with:
+          rfc-number: ${{inputs.rfc-number}}
+          app-ci: ${{inputs.rfc-app-ci}}
+          config-file: ${{ steps.load-env.outputs.CD_CONFIG_FILE }}
+          gh-token: ${{ steps.generate_approval_token.outputs.token }}
+
+      # Generate RFC cvs-health-source-code/gitops-cd-actions/rfc-create@v1
+      - name: Generate RFC
+        id: rfc-create
+        if: ${{ !inputs.manual-rfc && steps.set-argocd-vars.outputs.TARGET_ENV_TYPE == 'prod' && (steps.admin-approval.outputs.approved == 'true' || steps.check-existing-approval.outputs.skip_manual_approval == 'true') && (steps.admin-approval.outcome != 'failure' || steps.admin-approval.outcome == 'skipped') }}
+        uses: cvs-health-source-code/gitops-cd-actions/rfc-create@v1
+        with:
+          CHANGE_DESCRIPTION: |
+            ${{ steps.prep-prod-deployment.outputs.CHANGE_DESCRIPTION }}
+            🔍 Approval Info: ${{ steps.set-approver.outputs.APPROVAL_SOURCE == 'inherited' && 'Inherited from previous pipeline approval' || 'Manual approval granted in current pipeline' }}
+            👤 Approver: ${{ steps.set-approver.outputs.FINAL_APPROVER_NAME }} (${{ steps.set-approver.outputs.FINAL_APPROVER_EMAIL }})
+            ${{ steps.set-approver.outputs.APPROVAL_SOURCE == 'inherited' && format('🔗 Original Run: {0}', steps.set-approver.outputs.ORIGINAL_RUN_ID) || '' }}
+            ${{ steps.set-approver.outputs.APPROVAL_SOURCE == 'inherited' && format('🌍 Original Environment: {0}', steps.set-approver.outputs.ORIGINAL_ENVIRONMENT) || '' }}
+          CHANGE_DOMAIN: ${{ steps.configure-rfc.outputs.SNOW_CHANGE_DOMAIN }}
+          CHANGE_IMPACTED_WEBSITE: ${{ steps.configure-rfc.outputs.SNOW_IMPACTED_CI }}
+          LOB: ${{inputs.lob}}
+          RFC_END_DATE: ${{ steps.configure-rfc.outputs.SNOW_RFC_END_DATE}}
+          RFC_SHORT_DESC: ${{ steps.prep-prod-deployment.outputs.CHANGE_DESCRIPTION }}
+          RFC_DESC: ${{ steps.prep-prod-deployment.outputs.CHANGE_DESCRIPTION }}
+          RFC_START_DATE: ${{ steps.configure-rfc.outputs.SNOW_RFC_START_DATE}}
+          SNOW_GROUP_TEMPLATE: ${{ steps.configure-rfc.outputs.SNOW_CHANGE_TEMPLATE}}
+          SNOW_ASSGN_USER: ${{ steps.configure-rfc.outputs.SNOW_CHANGE_ASSIGNED_USER }}
+          WORKFLOW_TRIGGERD_BY: ${{ steps.set-approver.outputs.FINAL_APPROVER_EMAIL }}
+          SNOW_CREATE_URL: ${{ steps.configure-rfc.outputs.SNOW_CREATE_URL }}
+      - name: Output predeployment status
+        if: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE == 'prod' && steps.admin-approval.outcome == 'failure' }}
+        id: output-predeployment-status
+        run: |
+          echo "Deployment environment: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE }}"
+          echo "Manual RFC outcome: ${{ steps.manual-rfc.outcome }}"
+          echo "Manual RFC validation: ${{ steps.manual-rfc.outputs.validation-result }}"
+          echo "auto rfc-create-outcome: ${{ steps.rfc-create.outcome }}"
+          echo "auto rfc-create-output: ${{ steps.rfc-create.outputs.CHG_ID }}"
+          echo "${{ steps.admin-approval.outcome }}"
+          exit 1
+      # Push Deploy Manifests  cvs-health-source-code/gitops-cd-actions/push-deploy-manifests@v1
+      - name: Push Deploy Manifests
+        id: push-deploy-manifests
+        if: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE != 'prod' || ((steps.manual-rfc.outcome.validation-result == 'success' && steps.manual-rfc.outcome != 'skipped') ||(steps.rfc-create.outcome != '' && steps.rfc-create.outputs.CHG_ID != '' && steps.rfc-create.outcome !='skipped') && (steps.admin-approval.outcome != 'failure' || steps.admin-approval.outcome == 'skipped'))}}
+        uses: cvs-health-source-code/gitops-cd-actions/push-deploy-manifests@v1
+
+      # Synchronize deploy Manifests With Argocd cvs-health-source-code/gitops-cd-actions/sync-deploy-manifests@v1
+      - name: Synchronize deploy Manifests With Argocd
+        id: sync-deploy-manifests
+        if: ${{ steps.set-argocd-vars.outputs.TARGET_ENV_TYPE != 'prod' || ((steps.manual-rfc.outcome.validation-result == 'success' && steps.manual-rfc.outcome != 'skipped') ||(steps.rfc-create.outcome != '' && steps.rfc-create.outputs.CHG_ID != '' && steps.rfc-create.outcome !='skipped')&& (steps.admin-approval.outcome != 'failure' || steps.admin-approval.outcome == 'skipped'))}}
+        uses: cvs-health-source-code/gitops-cd-actions/sync-deploy-manifests@v1
+        with:
+          deploy-wait-time: ${{ vars.GITOPS_SUCCESS_DEPLOY_WAIT_TIME || 600 }}
+        continue-on-error: true
+
+      # Re-Synchronize deploy Manifests With Argocd cvs-health-source-code/gitops-cd-actions/resync-deploy-manifests@v1
+      - name: Re-Synchronize deploy Manifests With Argocd
+        id: resync-deploy-manifests
+        if: ${{ (steps.set-argocd-vars.outputs.TARGET_ENV_TYPE != 'prod' || ((steps.manual-rfc.outcome.validation-result == 'success' && steps.manual-rfc.outcome != 'skipped') ||(steps.rfc-create.outcome != '' && steps.rfc-create.outputs.CHG_ID != '' && steps.rfc-create.outcome !='skipped')) &&  steps.sync-deploy-manifests.outputs.deploy_result != '0'  && (steps.admin-approval.outcome != 'failure' || steps.admin-approval.outcome == 'skipped')) }}
+        uses: cvs-health-source-code/gitops-cd-actions/resync-deploy-manifests@v1
+        with:
+          deploy-wait-time: ${{ vars.GITOPS_SUCCESS_DEPLOY_WAIT_TIME || 600 }}
+        continue-on-error: true
+
+      # Print Debug logs
+      - name: Print Debug logs
+        id: print-outputs
+        run: |
+              echo "resync-deploy-manifests status: ${{ steps.resync-deploy-manifests.outputs.deploy_result}}"
+              echo "sync-deploy-manifests status:${{ steps.sync-deploy-manifests.outputs.deploy_result}}"
+
+      # print failed deployment logs cvs-health-source-code/gitops-cd-actions/failed-deploy-logs@v1
+      - name: print failed deployment logs
+        id: print-failed-deploy-logs
+        if: steps.sync-deploy-manifests.outputs.deploy_result != '0' && steps.resync-deploy-manifests.outputs.deploy_result != '0'
+        uses: cvs-health-source-code/gitops-cd-actions/failed-deploy-logs@v1
+        with:
+          failed-deploy-wait-time: ${{ vars.GITOPS_FAILED_DEPLOY_WAIT_TIME || 30 }}
+
+      # delete failed deployment cvs-health-source-code/gitops-cd-actions/cleanup-deployment@v1
+      - name: delete failed deployment
+        id: delete-failed-deployment
+        if: steps.sync-deploy-manifests.outputs.deploy_result != '0' && steps.resync-deploy-manifests.outputs.deploy_result != '0'
+        uses: cvs-health-source-code/gitops-cd-actions/cleanup-deployment@v1
+        with:
+          github-token: ${{ steps.generate_token.outputs.installation-token }}
+          app-name: ${{ env.APP_NAME }}
+          env-name: ${{ env.ENV_NAME }}
+          deploy-version: ${{ env.DEPLOY_VERSION }}
+          live-version: ${{ env.LIVE_VERSION }}
+          canary-weightage: ${{ env.CANARY_WEIGHTAGE }}
+          manifests-repo-name: ${{ env.MANIFESTS_REPO_NAME }}
+          deploy-result: "1"
+
+      # Service now fail deployment for production cvs-health-source-code/gitops-cd-actions/rfc-close@v1
+      - name: Service now fail deployment for production
+        id: prod-failed-deployment
+        if: ${{ !inputs.manual-rfc && always() && failure()  &&  steps.set-argocd-vars.outputs.TARGET_ENV_TYPE == 'prod' &&  steps.rfc-create.outputs.CHG_ID != ''}}
+        uses: cvs-health-source-code/gitops-cd-actions/rfc-close@v1
+        with:
+          github-token: ${{ steps.generate_token.outputs.installation-token }}
+          rfc-closure-url: ${{ steps.configure-rfc.outputs.SNOW_CLOSE_URL }}
+          rfc-implement-time:  ${{ steps.configure-rfc.outputs.SNOW_RFC_IMPLEMENT_TIME}}
+          user-email: ${{ github.actor }}
+          approver-user-email: ${{ steps.admin-approval.outputs.approvedby }}
+          close-notes: "Deployment unsuccessful ${{ steps.print-failed-deploy-logs.outputs.LOG_RESULT }}"
+          work-notes: "Deployment pipeline tiggered by ${{ github.actor }} unsuccessful ${{ steps.print-failed-deploy-logs.outputs.LOG_RESULT }}"
+          deployment-successfull: "false"
+          change-id: ${{ steps.rfc-create.outputs.CHG_ID }}
+
+
+      # fail pipeline as new deployment failed
+      - name: fail pipeline as new deployment failed
+        id: fail-pipeline
+        if: steps.admin-approval.outputs.approved == 'false' || ( steps.sync-deploy-manifests.outputs.deploy_result != '0' && steps.resync-deploy-manifests.outputs.deploy_result != '0')
+        run: |
+          echo "Deployment failed, refer logs in previous steps"
+          exit 1
+
+
+      # Set ouputs for the job to carry forward ENV variables
+      - name: Set ouputs for the job to carry forward ENV variables
+        id: set-outputs
+        run: |
+
+              echo "LIVE_VERSION=$LIVE_VERSION" >> $GITHUB_OUTPUT
+              echo "DEPLOY_VERSION=$DEPLOY_VERSION" >> $GITHUB_OUTPUT
+              echo "MANIFESTS_REPO_NAME=$MANIFESTS_REPO_NAME" >> $GITHUB_OUTPUT
+              echo "MANIFESTS_GIT_PATH=$MANIFESTS_GIT_PATH" >> $GITHUB_OUTPUT
+              echo "GIT_TAG=$GIT_TAG" >> $GITHUB_OUTPUT
+
+              CANARY_WEIGHT=$CANARY_WEIGHT_INPUT
+              ISTIO_CANARY_WEIGHTAGE=${CANARY_WEIGHT%.*}
+              echo "ISTIO_CANARY_WEIGHTAGE is $ISTIO_CANARY_WEIGHTAGE"
+              echo "CANARY_WEIGHTAGE=$ISTIO_CANARY_WEIGHTAGE" >> $GITHUB_OUTPUT
+              echo "DEPLOY_RESULT=$DEPLOY_RESULT" >> $GITHUB_OUTPUT
+
+  canary-rollout:
+    runs-on: ${{ inputs.runs-on }}
+    #  group: cvs-linux-self-hosted
+    if: ${{ needs.initialize-and-deploy.outputs.CANARY_WEIGHTAGE != '0' }}
+    needs: [ initialize-and-deploy ]
+    env:
+      ENV_NAME: ${{ inputs.environment }}
+      APP_NAME: ${{ inputs.app-name }}
+      HELM_TEMPLATE_REPO: ${{ inputs.helm-template-repo }}
+      HELM_TEMPLATE_BRANCH: ${{ inputs.helm-template-branch }}
+      HELM_FILE_VERSION: ${{ inputs.helm-file-version }}
+      DEPLOY_VERSION: ${{ needs.initialize-and-deploy.outputs.DEPLOY_VERSION }}
+      ARGOCD_PASSWORD_NAME: ${{ needs.initialize-and-deploy.outputs.ARGOCD_PASSWORD_NAME }}
+      MANIFESTS_REPO_NAME: ${{ needs.initialize-and-deploy.outputs.MANIFESTS_REPO_NAME }}
+      MANIFESTS_GIT_PATH: ${{ needs.initialize-and-deploy.outputs.MANIFESTS_GIT_PATH }}
+      GIT_TAG: ${{ needs.initialize-and-deploy.outputs.GIT_TAG }}
+      LIVE_VERSION: ${{ needs.initialize-and-deploy.outputs.LIVE_VERSION }}
+      CANARY_WEIGHTAGE: ${{ needs.initialize-and-deploy.outputs.CANARY_WEIGHTAGE }}
+
+    steps:
+
+      # Generate Github token cvs-health-source-code/gh-app-installation-token-action@v1
+      - name: Generate Github token
+        id: generate_token
+        uses: cvs-health-source-code/gh-app-installation-token-action@v1
+        with:
+          token: ${{ secrets.GHA_DEPLOY_USER }}
+
+      # Checkout actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Tenant Configuration
+        if: ${{ inputs.adjusted-tenant-path != '' && inputs.docker-image-tag != '' }}
+        uses: cvs-health-source-code/gitops-cd-actions/set-tenant-config@v1
+        with:
+          adjusted-tenant-path: ${{ inputs.adjusted-tenant-path }}
+          environment: ${{ inputs.environment }}
+          docker-image-tag: ${{ inputs.docker-image-tag }}
+          helm-file-version: ${{ inputs.helm-file-version }}
+
+      #ArgoCD Input Validations cvs-health-source-code/gitops-cd-actions/argocd-validations@v1
+      - name: ArgoCD Input Validations
+        id: argocd-validations
+        uses: cvs-health-source-code/gitops-cd-actions/argocd-validations@v1
+        with:
+          argocd-token: ${{ secrets[env.ARGOCD_PASSWORD_NAME]}}
+          argocd-user: ${{ needs.initialize-and-deploy.outputs.ARGOCD_USER }}
+          argocd-url: ${{ needs.initialize-and-deploy.outputs.ARGOCD_URL }}
+
+      # Fetch Setup Repo for Running Helm Commands cvs-health-source-code/gitops-cd-actions/fetch-setup-repos@v1
+      - name: Fetch Setup Repo for Running Helm Commands
+        id: fetch-setup-repos
+        uses: cvs-health-source-code/gitops-cd-actions/fetch-setup-repos@v1
+        with:
+          github-token: ${{ steps.generate_token.outputs.installation-token }}
+
+      # Generate Istio Manifests cvs-health-source-code/gitops-cd-actions/helm-generate-manifests@v1
+      - name: Generate Istio Manifests
+        id: helm-generate-manifests
+        uses: cvs-health-source-code/gitops-cd-actions/helm-generate-manifests@v1
+        with:
+          adjusted-tenant-path: ${{ inputs.adjusted-tenant-path }}
+
+      # Push Istio Canary Manifests cvs-health-source-code/gitops-cd-actions/push-istio-manifests@v1
+      - name: Push Istio Canary Manifests
+        id: push-istio-manifests
+        uses: cvs-health-source-code/gitops-cd-actions/push-istio-manifests@v1
+        with:
+          canary-weight: ${{ needs.initialize-and-deploy.outputs.CANARY_WEIGHTAGE }}
+
+
+      # Argo Sync Istio Manifests cvs-health-source-code/gitops-cd-actions/sync-istio-manifests@v1
+      - name: Argo Sync Istio Manifests
+        id: sync-istio-manifests
+        uses: cvs-health-source-code/gitops-cd-actions/sync-istio-manifests@v1
+        with:
+          istio-wait-time: ${{ vars.GITOPS_ISTIO_WAIT_TIME || 60 }}
+
+  route-all-traffic-approval:
+    runs-on: ${{ inputs.runs-on }}
+    #  group: cvs-linux-self-hosted
+    needs: [ initialize-and-deploy, canary-rollout ]
+    if: ${{ always()  && needs.initialize-and-deploy.outputs.CANARY_WEIGHTAGE != '0' && ( needs.canary-rollout.result =='success' || needs.canary-rollout.result =='skipped' ) }}
+    environment: ${{ inputs.environment }}
+
+    steps:
+
+    - name: Run echo command
+      id: set-ouputs
+      run: |
+        echo "Approval provided"
+
+  route-all-traffic:
+    runs-on: ${{ inputs.runs-on }}
+    #  group: cvs-linux-self-hosted
+    if: ${{ always() && ((needs.initialize-and-deploy.result =='success' && needs.canary-rollout.result =='success' && needs.route-all-traffic-approval.result =='success' )  || ( needs.initialize-and-deploy.result =='success' && (needs.canary-rollout.result =='skipped' || needs.route-all-traffic-approval.result =='skipped') )) }}
+    needs: [ initialize-and-deploy, canary-rollout, route-all-traffic-approval ]
+    env:
+      ENV_NAME: ${{ inputs.environment }}
+      APP_NAME: ${{ inputs.app-name }}
+      HELM_TEMPLATE_REPO: ${{ inputs.helm-template-repo }}
+      HELM_TEMPLATE_BRANCH: ${{ inputs.helm-template-branch }}
+      HELM_FILE_VERSION: ${{ inputs.helm-file-version }}
+      ARGOCD_PASSWORD_NAME: ${{ needs.initialize-and-deploy.outputs.ARGOCD_PASSWORD_NAME }}
+      DEPLOY_VERSION: ${{ needs.initialize-and-deploy.outputs.DEPLOY_VERSION }}
+      MANIFESTS_REPO_NAME: ${{ needs.initialize-and-deploy.outputs.MANIFESTS_REPO_NAME }}
+      MANIFESTS_GIT_PATH: ${{ needs.initialize-and-deploy.outputs.MANIFESTS_GIT_PATH }}
+      GIT_TAG: ${{ needs.initialize-and-deploy.outputs.GIT_TAG }}
+      LIVE_VERSION: ${{ needs.initialize-and-deploy.outputs.LIVE_VERSION }}
+      CANARY_WEIGHTAGE: ${{ needs.initialize-and-deploy.outputs.CANARY_WEIGHTAGE }}
+
+    steps:
+
+      # Generate Github token cvs-health-source-code/gh-app-installation-token-action@v1
+      - name: Generate Github token
+        id: generate_token
+        uses: cvs-health-source-code/gh-app-installation-token-action@v1
+        with:
+          token: ${{ secrets.GHA_DEPLOY_USER }}
+
+      # Checkout actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Tenant Configuration
+        if: ${{ inputs.adjusted-tenant-path != '' && inputs.docker-image-tag != '' }}
+        uses: cvs-health-source-code/gitops-cd-actions/set-tenant-config@v1
+        with:
+          adjusted-tenant-path: ${{ inputs.adjusted-tenant-path }}
+          environment: ${{ inputs.environment }}
+          docker-image-tag: ${{ inputs.docker-image-tag }}
+          helm-file-version: ${{ inputs.helm-file-version }}
+
+      #ArgoCD Input Validations cvs-health-source-code/gitops-cd-actions/argocd-validations@v1
+      - name: ArgoCD Input Validations
+        id: argocd-validations
+        uses: cvs-health-source-code/gitops-cd-actions/argocd-validations@v1
+        with:
+          argocd-token: ${{ secrets[env.ARGOCD_PASSWORD_NAME]}}
+          argocd-user: ${{ needs.initialize-and-deploy.outputs.ARGOCD_USER }}
+          argocd-url: ${{ needs.initialize-and-deploy.outputs.ARGOCD_URL }}
+
+
+      # Fetch Setup Repo for Running Helm Commands cvs-health-source-code/gitops-cd-actions/fetch-setup-repos@v1
+      - name: Fetch Setup Repo for Running Helm Commands
+        id: fetch-setup-repos
+        uses: cvs-health-source-code/gitops-cd-actions/fetch-setup-repos@v1
+        with:
+          github-token: ${{ steps.generate_token.outputs.installation-token }}
+
+      # Generate Istio Manifests cvs-health-source-code/gitops-cd-actions/helm-generate-manifests@v1
+      - name: Generate Istio Manifests
+        id: helm-generate-manifests
+        uses: cvs-health-source-code/gitops-cd-actions/helm-generate-manifests@v1
+        with:
+          adjusted-tenant-path: ${{ inputs.adjusted-tenant-path }}
+
+      # Push Istio Canary Manifests cvs-health-source-code/gitops-cd-actions/push-istio-manifests@v1
+      - name: Push Istio Canary Manifests
+        id: push-istio-manifests
+        uses: cvs-health-source-code/gitops-cd-actions/push-istio-manifests@v1
+        with:
+          canary-weight: ${{ needs.initialize-and-deploy.outputs.CANARY_WEIGHTAGE }}
+
+      # Argo Sync Istio Manifests cvs-health-source-code/gitops-cd-actions/sync-istio-manifests@v1
+      - name: Argo Sync Istio Manifests
+        id: sync-istio-manifests
+        uses: cvs-health-source-code/gitops-cd-actions/sync-istio-manifests@v1
+        with:
+          istio-wait-time: ${{ vars.GITOPS_ISTIO_WAIT_TIME || 60 }}
+
+  post-deploy-steps:
+    runs-on: ${{ inputs.runs-on }}
+    #  group: cvs-linux-self-hosted
+    needs: [  initialize-and-deploy, route-all-traffic]
+    if: ${{ always() && needs.route-all-traffic.result =='success' }}
+    env:
+      ENV_NAME: ${{ inputs.environment }}
+      APP_NAME: ${{ inputs.app-name }}
+      HELM_TEMPLATE_REPO: ${{ inputs.helm-template-repo }}
+      HELM_TEMPLATE_BRANCH: ${{ inputs.helm-template-branch }}
+      HELM_FILE_VERSION: ${{ inputs.helm-file-version }}
+      ARGOCD_PASSWORD_NAME: ${{ needs.initialize-and-deploy.outputs.ARGOCD_PASSWORD_NAME }}
+      DEPLOY_VERSION: ${{ needs.initialize-and-deploy.outputs.DEPLOY_VERSION }}
+      GIT_TAG: ${{ needs.initialize-and-deploy.outputs.GIT_TAG }}
+      LIVE_VERSION: ${{ needs.initialize-and-deploy.outputs.LIVE_VERSION }}
+      MANIFESTS_REPO_NAME: ${{ needs.initialize-and-deploy.outputs.MANIFESTS_REPO_NAME }}
+      MANIFESTS_GIT_PATH: ${{ needs.initialize-and-deploy.outputs.MANIFESTS_GIT_PATH }}
+      DEPLOY_RESULT: ${{ needs.initialize-and-deploy.outputs.DEPLOY_RESULT }}
+      POST_DEPLOY_VALIDATION: ${{ needs.initialize-and-deploy.outputs.POST_DEPLOY_VALIDATION }}
+      CANARY_WEIGHTAGE: ${{ needs.initialize-and-deploy.outputs.CANARY_WEIGHTAGE }}
+
+    steps:
+    # Generate Github token cvs-health-source-code/gh-app-installation-token-action@v1
+    - name: Generate Github token
+      id: generate_token
+      uses: cvs-health-source-code/gh-app-installation-token-action@v1
+      with:
+        token: ${{ secrets.GHA_DEPLOY_USER }}
+
+    # Checkout actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    #publish deployment statuses cvs-health-source-code/gitops-cd-actions/publish-deployment-statuses@v1
+    - name: publish deployment statuses
+      id: publish-deployment-statuses
+      uses: cvs-health-source-code/gitops-cd-actions/publish-deployment-statuses@v1
+      with:
+        github-token: ${{ steps.generate_token.outputs.installation-token }}
+
+    # ArgoCD Login cvs-health-source-code/gitops-cd-actions/argocd-validations@v1
+    - name: ArgoCD Login
+      id: argocd-login
+      uses: cvs-health-source-code/gitops-cd-actions/argocd-validations@v1
+      with:
+        argocd-token: ${{ secrets[env.ARGOCD_PASSWORD_NAME] }}
+        argocd-user: ${{ needs.initialize-and-deploy.outputs.ARGOCD_USER }}
+        argocd-url: ${{ needs.initialize-and-deploy.outputs.ARGOCD_URL }}
+
+    # Fetch Setup Repo for Push files cvs-health-source-code/gitops-cd-actions/fetch-setup-repos@v1
+    - name: Fetch Setup Repo for Push files
+      id: fetch-setup-repos
+      uses: cvs-health-source-code/gitops-cd-actions/fetch-setup-repos@v1
+      with:
+        github-token: ${{ steps.generate_token.outputs.installation-token }}
+
+    # Post Deploy Automation cvs-health-source-code/gitops-cd-actions/post-deploy-trigger@v1
+    - name: Post Deploy Automation
+      id: post-deploy-automation
+      if: env.POST_DEPLOY_VALIDATION != 0
+      uses: cvs-health-source-code/gitops-cd-actions/post-deploy-trigger@v1
+      with:
+        github-token: ${{ steps.generate_token.outputs.installation-token }}
+        adjusted-tenant-path: ${{ inputs.adjusted-tenant-path }}
+
+    # cleanup-deployment cvs-health-source-code/gitops-cd-actions/cleanup-deployment@v1
+    - name: cleanup-deployment
+      id: cleanup-deployment
+      uses: cvs-health-source-code/gitops-cd-actions/cleanup-deployment@v1
+      with:
+        github-token: ${{ steps.generate_token.outputs.installation-token }}
+        app-name: ${{ env.APP_NAME }}
+        env-name: ${{ env.ENV_NAME }}
+        deploy-version: ${{ env.DEPLOY_VERSION }}
+        live-version: ${{ env.LIVE_VERSION }}
+        canary-weightage: ${{ env.CANARY_WEIGHTAGE }}
+        manifests-repo-name: ${{ env.MANIFESTS_REPO_NAME }}
+        deploy-result: ${{ env.DEPLOY_RESULT }}
+
+    - name: Service now closure deployment for production
+      id: prod-success-deployment
+      if: ${{ !inputs.manual-rfc && needs.initialize-and-deploy.outputs.TARGET_ENV_TYPE == 'prod' &&  needs.initialize-and-deploy.outputs.CHG_ID != ''}}
+      uses: cvs-health-source-code/gitops-cd-actions/rfc-close@v1
+      with:
+        github-token: ${{ steps.generate_token.outputs.installation-token }}
+        rfc-closure-url: ${{ needs.initialize-and-deploy.outputs.SNOW_CLOSE_URL }}
+        rfc-implement-time: ${{ needs.initialize-and-deploy.outputs.SNOW_RFC_IMPLEMENT_TIME}}
+        user-email: ${{ github.actor }}
+        approver-user-email: ${{ needs.initialize-and-deploy.outputs.APPROVEDBY }}
+        close-notes: "Deployment Successful"
+        work-notes: "Deployment pipeline tiggered by ${{ github.actor }} Successful"
+        deployment-successfull: "true"
+        change-id: ${{ needs.initialize-and-deploy.outputs.CHG_ID }}
+
+  automation-promotion:
+    runs-on: ${{ inputs.runs-on }}
+    #  group: cvs-linux-self-hosted
+    env:
+      ENV_NAME: ${{ inputs.environment }}
+      APP_NAME: ${{ inputs.app-name }}
+      EXECUTE_AUTOMATION: ${{ needs.initialize-and-deploy.outputs.EXECUTE_AUTOMATION }}
+      NEXT_ENV: ${{ needs.initialize-and-deploy.outputs.NEXT_ENV }}
+    needs: [ initialize-and-deploy, post-deploy-steps ]
+    if: ${{ always() && needs.post-deploy-steps.result =='success' && needs.initialize-and-deploy.outputs.NEXT_ENV != '' }}
+    steps:
+
+      # Generate Github token cvs-health-source-code/gh-app-installation-token-action@v1
+      - name: Generate Github token
+        id: generate_token
+        uses: cvs-health-source-code/gh-app-installation-token-action@v1
+        with:
+          token: ${{ secrets.GHA_DEPLOY_USER }}
+
+      # Checkout actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # execute-automation cvs-health-source-code/gitops-cd-actions/execute-automation@v1
+      - name: execute-automation
+        id: execute-automation
+        if: needs.initialize-and-deploy.outputs.EXECUTE_AUTOMATION == 'YES'
+        uses: cvs-health-source-code/gitops-cd-actions/execute-automation@v1
+
+      # promote-workflow cvs-health-source-code/gitops-cd-actions/promote-workflow@v1
+      - name: promote-workflow
+        id: promote-workflow
+        uses: cvs-health-source-code/gitops-cd-actions/promote-workflow@v1
+        with:
+          next-env: ${{ needs.initialize-and-deploy.outputs.NEXT_ENV }}
+          image-tag: ${{ needs.initialize-and-deploy.outputs.DEPLOY_VERSION }}
+          github-token: ${{ steps.generate_token.outputs.installation-token }}
+          deploy-config-repo: ${{ inputs.deploy-config-repo }}
+          deploy-config-org: ${{ inputs.deploy-config-org }}
+          app-name: ${{ inputs.app-name }}
+          values-file-name: ${{ inputs.helm-file-version }}
+          workflow-id: ${{github.run_id}}
+          pr_refresh_timeout: ${{ inputs.pr_refresh_timeout }}
+          adjusted-tenant-path: ${{ inputs.adjusted-tenant-path }}
+env:
+  GITHUB_API_URL_PREFIX: "https://api.github.com/repos"
+  CD_CONFIG_REPO: "cvs-health-source-code/stargate_allow_list"
+  CD_CONFIG_REPO_BRANCH: "main"
+  CD_CONFIG_FILE: "cd/gha_cd/configuration.yaml"
+  CD_ENV_CONFIG_FILE: "cd/gha_cd/cd_env_config.yaml"
+  PDB_CHECK_CONFIG_FILE: "cd/allow_list.yaml"
+  PIPELINE_ENV: prod
